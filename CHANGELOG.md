@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-09
+
+> **Breaking — the npm package is now `@diousk/pi-subagents-fast`.** Existing installs of `@tintinweb/pi-subagents` are not automatically migrated; install this fork with `pi install npm:@diousk/pi-subagents-fast`.
+
 ### Added
 - **Custom agents can request an OpenAI Responses/Codex service tier with `service_tier`.** Set `service_tier: priority` (or another supported tier) in frontmatter; it is forwarded on compatible requests and shown only when the effective API supports it, while other providers keep their normal behavior.
 

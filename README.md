@@ -1,8 +1,10 @@
-# @tintinweb/pi-subagents
+# @diousk/pi-subagents-fast
+
+> **Fork notice:** This version is published as `@diousk/pi-subagents-fast`, independently from upstream [`@tintinweb/pi-subagents`](https://github.com/tintinweb/pi-subagents). Install this fork with `pi install npm:@diousk/pi-subagents-fast`.
 
 A [pi](https://pi.dev) extension that brings **Claude Code-style autonomous sub-agents and workflow orchestration** to pi. Spawn specialized agents that run in isolated sessions — each with its own tools, system prompt, model, and thinking level. Run them in the background (the default) or block on them, steer them mid-run, resume completed sessions, and define your own custom agent types. When the orchestration shouldn't be improvised, hand a deterministic JavaScript script to the `SubagentWorkflow` tool — `agent()`, `parallel()`, `pipeline()` — and scripts written for Claude Code's `Workflow` tool run here unchanged.
 
-<img width="600" alt="pi-subagents screenshot" src="https://github.com/tintinweb/pi-subagents/raw/master/media/screenshot.png" />
+<img width="600" alt="pi-subagents screenshot" src="https://github.com/diousk/pi-subagents/raw/master/media/screenshot.png" />
 
 
 https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
@@ -39,8 +41,16 @@ https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
 
 ## Install
 
+Install this fork from npm:
+
 ```bash
-pi install npm:@tintinweb/pi-subagents
+pi install npm:@diousk/pi-subagents-fast
+```
+
+To install directly from your GitHub fork:
+
+```bash
+pi install git:github.com/diousk/pi-subagents@master
 ```
 
 Or load directly for development:
@@ -48,6 +58,23 @@ Or load directly for development:
 ```bash
 pi -e ./src/index.ts
 ```
+
+## Publish this fork
+
+This repository is already a Pi package: `package.json` includes the `pi-package` keyword and a `pi.extensions` manifest. Publish it to npm as `@diousk/pi-subagents-fast`:
+
+```bash
+npm login
+npm publish --access public
+```
+
+Before publishing, inspect the tarball contents:
+
+```bash
+npm pack --dry-run
+```
+
+The `prepublishOnly` script runs lint, typecheck, tests, and the build before npm uploads the package. After publishing, install it with `pi install npm:@diousk/pi-subagents-fast`.
 
 Requires pi **0.84.0 or newer**: the [`SubagentWorkflow`](#subagentworkflow) tool builds on `constrainedSampling` (pi 0.82.0) and pi-tui's `stripTerminalSequences` (0.84.0). The `peerDependencies` range declares it, so npm flags an older pi at install time.
 
