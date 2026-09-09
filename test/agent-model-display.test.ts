@@ -59,8 +59,8 @@ function ctx() {
 }
 
 /** What a child session reports about itself once pi has resolved it. */
-function session(provider: string, id: string, thinkingLevel: string, name?: string) {
-  return { model: { provider, id, name: name ?? MODEL_NAMES[id] }, thinkingLevel, dispose: vi.fn() } as never;
+function session(provider: string, id: string, thinkingLevel: string, name?: string, api?: string) {
+  return { model: { provider, id, name: name ?? MODEL_NAMES[id], ...(api ? { api } : {}) }, thinkingLevel, dispose: vi.fn() } as never;
 }
 
 const MODELS = [
@@ -307,6 +307,29 @@ describe("Agent tool result — effective model", () => {
 
     expect(result.details.tags).toContain("thinking: high");
     expect(render(tool, result)).not.toContain("asked");
+  });
+
+  it("shows a configured service tier for a compatible provider", async () => {
+    pinnedAgent("service_tier: priority\n");
+    vi.mocked(runAgent).mockImplementation(async (_c: any, _t: any, _p: any, options: any) => {
+      const s = session("openai", "claude-opus-4-6", "high", undefined, "openai-responses");
+      options.onSessionCreated?.(s);
+      return { responseText: "done", session: s, aborted: false, steered: false } as never;
+    });
+    const tool = agentTool();
+    const context = ctx();
+    context.model = { ...context.model, api: "openai-responses" };
+
+    const result = await tool.execute(
+      "tc-6b",
+      { prompt: "go", description: "d", subagent_type: "pinned", run_in_background: false },
+      undefined,
+      vi.fn(),
+      context,
+    );
+
+    expect(result.details.tags).toContain("service tier: priority");
+    expect(render(tool, result)).toContain("service tier: priority");
   });
 });
 

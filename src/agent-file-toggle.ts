@@ -241,6 +241,7 @@ export function serializeAgentFile(cfg: AgentConfig): string {
   // the first time it is ejected.
   fmFields.push(`tools: ${formatToolsField(cfg.builtinToolNames)}`);
   if (cfg.model) fmFields.push(`model: ${cfg.model}`);
+  if (cfg.serviceTier) fmFields.push(`service_tier: ${cfg.serviceTier}`);
   if (cfg.thinking) fmFields.push(`thinking: ${cfg.thinking}`);
   if (cfg.maxTurns) fmFields.push(`max_turns: ${cfg.maxTurns}`);
   if (cfg.allowedSubagents !== undefined) {

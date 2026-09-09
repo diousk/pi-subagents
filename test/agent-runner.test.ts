@@ -127,6 +127,8 @@ import {
   getAgentConversation,
   getDefaultMaxTurns,
   getGraceTurns,
+  installServiceTierPayload,
+  isServiceTierApi,
   parseExtensionsSpec,
   parseExtSelectors,
   resolveDefaultModel,
@@ -176,8 +178,9 @@ function createSession(finalText: string) {
     }),
     // pi's Agent; `beforeToolCall` is an optional, assignable hook the scope
     // installer wraps to block out-of-scope calls on turn 1.
-    agent: { beforeToolCall: undefined } as {
+    agent: { beforeToolCall: undefined, onPayload: undefined } as {
       beforeToolCall?: (context: any, signal?: any) => Promise<any>;
+      onPayload?: (payload: unknown, model: { api: string | undefined }) => unknown | undefined | Promise<unknown | undefined>;
     },
     setSessionName: vi.fn(),
     bindExtensions: vi.fn(async () => {}),
@@ -374,6 +377,119 @@ describe("agent-runner final output capture", () => {
     await runAgent(ctx, "Explore", "go", { pi, agentId: "a1b2c3d4e5f6" });
 
     expect(session.setSessionName).toHaveBeenCalledWith("Explore#a1b2c3d4");
+  });
+});
+
+describe("agent-runner service tier payload", () => {
+  const requestModel = (api: string | undefined) => ({ api });
+
+  it.each(["openai-responses", "openai-codex-responses"])(
+    "preserves the bound callback and adds priority on every %s turn",
+    async (api) => {
+      const { session } = createSession("OK");
+      const prior = vi.fn(async (payload: unknown) => ({
+        ...(payload as Record<string, unknown>),
+        fromExtension: true,
+        service_tier: "default",
+      }));
+      const payloads: unknown[] = [];
+      // Extensions own the callback installed by pi, so install it during the
+      // binding phase rather than before runAgent. The service-tier wrapper
+      // must be layered after binding or this callback would replace it.
+      session.bindExtensions = vi.fn(async () => {
+        session.agent.onPayload = prior;
+      });
+      session.prompt.mockImplementation(async () => {
+        const onPayload = session.agent.onPayload!;
+        payloads.push(await onPayload({ input: "first" }, requestModel(api)));
+        payloads.push(await onPayload({ input: "second" }, requestModel(api)));
+        session.messages.push({
+          role: "assistant",
+          content: [{ type: "text", text: "OK" }],
+        });
+      });
+      createAgentSession.mockResolvedValue({ session });
+      vi.mocked(getAgentConfig).mockReturnValueOnce({
+        name: "Explore",
+        description: "Explore",
+        builtinToolNames: ["read"],
+        extensions: false,
+        skills: false,
+        systemPrompt: "You are Explore.",
+        promptMode: "replace",
+        inheritContext: false,
+        runInBackground: false,
+        isolated: false,
+        serviceTier: "priority",
+      });
+
+      await runAgent(ctx, "Explore", "go", { pi });
+
+      expect(session.agent.onPayload).not.toBe(prior);
+      expect(payloads).toEqual([
+        { input: "first", fromExtension: true, service_tier: "priority" },
+        { input: "second", fromExtension: true, service_tier: "priority" },
+      ]);
+      expect(prior).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each(["auto", "default", "flex", "priority", "scale"] as const)(
+    "injects %s for a compatible API without a prior callback",
+    async (serviceTier) => {
+      const session = { agent: { onPayload: undefined } } as any;
+      const original = { input: "payload" };
+
+      installServiceTierPayload(session, serviceTier);
+
+      await expect(session.agent.onPayload(original, requestModel("openai-responses")))
+        .resolves.toEqual({ input: "payload", service_tier: serviceTier });
+      expect(original).toEqual({ input: "payload" });
+    },
+  );
+
+  it("preserves undefined and non-object callback replacements", async () => {
+    const prior = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce("replacement")
+      .mockResolvedValueOnce(null);
+    const session = { agent: { onPayload: prior } } as any;
+
+    installServiceTierPayload(session, "priority");
+    const payload = session.agent.onPayload;
+
+    await expect(payload({ input: "original" }, requestModel("openai-responses"))).resolves.toEqual({
+      input: "original",
+      service_tier: "priority",
+    });
+    await expect(payload({ input: "string" }, requestModel("openai-responses"))).resolves.toBe("replacement");
+    await expect(payload({ input: "null" }, requestModel("openai-responses"))).resolves.toBeNull();
+  });
+
+  it.each(["anthropic-messages", "openai-completions", "google-generative-ai", undefined])(
+    "leaves the payload unchanged for unsupported API %s",
+    async (api) => {
+      const prior = vi.fn(async () => ({ service_tier: "default", unchanged: true }));
+      const session = { agent: { onPayload: prior } } as any;
+
+      expect(isServiceTierApi(api)).toBe(false);
+      installServiceTierPayload(session, "priority");
+
+      await expect(session.agent.onPayload({ input: "unchanged" }, requestModel(api)))
+        .resolves.toEqual({ service_tier: "default", unchanged: true });
+      expect(prior).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not wrap payloads when no service tier is configured", async () => {
+    const prior = vi.fn(async (payload: unknown) => payload);
+    const session = { agent: { onPayload: prior } } as any;
+
+    installServiceTierPayload(session, undefined);
+
+    expect(session.agent.onPayload).toBe(prior);
+    await expect(session.agent.onPayload({ input: "unchanged" }, requestModel("openai-responses")))
+      .resolves.toEqual({ input: "unchanged" });
   });
 });
 

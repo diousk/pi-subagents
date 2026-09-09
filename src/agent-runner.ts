@@ -27,7 +27,7 @@ import { createNestedSubagentTools, getMaxSubagentDepth, type NestedAgentManager
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
 import { createStructuredCapture, createStructuredOutputTool, structuredRetryPrompt } from "./structured-output.js";
-import type { SubagentType, ThinkingLevel } from "./types.js";
+import type { ServiceTier, SubagentType, ThinkingLevel } from "./types.js";
 import type { LifetimeUsage } from "./usage.js";
 import type { CompiledSchema } from "./workflow/json-schema.js";
 
@@ -46,6 +46,45 @@ export const SUBAGENT_TOOL_NAMES = {
 
 /** Names of tools registered by this extension that subagents must NOT inherit. */
 const EXCLUDED_TOOL_NAMES: string[] = Object.values(SUBAGENT_TOOL_NAMES);
+
+/** APIs whose request payloads support OpenAI service tiers. */
+const SERVICE_TIER_APIS = new Set(["openai-codex-responses", "openai-responses"]);
+
+/** Whether an API accepts the OpenAI `service_tier` request field. */
+export function isServiceTierApi(api: string | undefined): boolean {
+  return api !== undefined && SERVICE_TIER_APIS.has(api);
+}
+
+function isObjectPayload(payload: unknown): payload is Record<string, unknown> {
+  return typeof payload === "object" && payload !== null && !Array.isArray(payload);
+}
+
+/**
+ * Add a custom agent's service tier to compatible provider requests.
+ *
+ * The existing payload hook belongs to pi's extension lifecycle, so it must be
+ * called first and its replacement preserved. An undefined replacement means
+ * "keep the original payload" in pi-ai's callback contract.
+ */
+export function installServiceTierPayload(
+  session: Pick<AgentSession, "agent">,
+  serviceTier: ServiceTier | undefined,
+): void {
+  if (serviceTier === undefined) return;
+
+  const priorOnPayload = session.agent.onPayload;
+  session.agent.onPayload = async (payload, requestModel) => {
+    const replacement = priorOnPayload
+      ? await priorOnPayload(payload, requestModel)
+      : undefined;
+    const effectivePayload = replacement === undefined ? payload : replacement;
+
+    if (!isServiceTierApi(requestModel.api) || !isObjectPayload(effectivePayload)) {
+      return effectivePayload;
+    }
+    return { ...effectivePayload, service_tier: serviceTier };
+  };
+}
 
 /**
  * Canonical name of an extension for `extensions: [...]` allowlist matching.
@@ -1024,6 +1063,8 @@ export async function runAgent(
       });
     },
   });
+
+  installServiceTierPayload(session, agentConfig?.serviceTier);
 
   // With `allowedToolNames` unset, the registry is scoped by `excludeTools` but
   // the ACTIVE set still needs managing: pi activates only its four default

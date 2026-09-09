@@ -19,7 +19,7 @@ import { abortable } from "./abortable.js";
 import { hasAgentBadge, renderAgentName } from "./agent-color.js";
 import { buildNewAgentFile, disableInContent, enableInContent, isEmptyStub, locateAgentFile, personalAgentsDir, projectAgentsDir, serializeAgentFile } from "./agent-file-toggle.js";
 import { AgentManager, isTopLevelAgent } from "./agent-manager.js";
-import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, getRememberAgents, normalizeMaxTurns, resolveEffectiveMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setGraceTurns, setRememberAgents, steerAgent } from "./agent-runner.js";
+import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, getRememberAgents, isServiceTierApi, normalizeMaxTurns, resolveEffectiveMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setGraceTurns, setRememberAgents, steerAgent } from "./agent-runner.js";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getConfig, getFallbackSubagent, isDefaultsDisabled, NO_FALLBACK, registerAgents, resolveSpawnType, resolveType, setDefaultsDisabled, setFallbackSubagent } from "./agent-types.js";
 import { inChildSessionContext } from "./child-context.js";
 import { type RpcHandle, registerRpcHandlers } from "./cross-extension-rpc.js";
@@ -420,7 +420,7 @@ export default function (pi: ExtensionAPI) {
   let showCost = false;
   function isShowCostEnabled(): boolean { return showCost; }
   function setShowCost(b: boolean): void { showCost = b; widget.update(); fleet.update(); }
-  /** Name the model and thinking level on the widget's running rows. */
+  /** Name the model, thinking level, and supported service tier on widget running rows. */
   let showModel = false;
   function isShowModelEnabled(): boolean { return showModel; }
   function setShowModel(b: boolean): void { showModel = b; widget.update(); }
@@ -1872,6 +1872,7 @@ Terse command-style prompts produce shallow, generic work.
         modelName,
         modelId,
         thinking,
+        serviceTier: model && isServiceTierApi(model.api) ? customConfig?.serviceTier : undefined,
         // Only set where the agent file outranked the caller, so the surfaces can
         // disclose a parameter that was accepted but could not take effect (#182).
         requestedThinking: resolvedConfig.overridden?.thinking,
@@ -3290,6 +3291,7 @@ description: <one-line description shown in UI>
 color: <optional agent name badge color: red, blue, green, yellow, purple, orange, pink, cyan, an Agency Agents alias, or quoted "#RRGGBB">
 tools: <comma-separated built-in tools: read, bash, edit, write, grep, find, ls. Use "none" for no tools. Omit for all tools>
 model: <optional model as "provider/modelId", e.g. "anthropic/claude-haiku-4-5". Omit to inherit parent model>
+service_tier: <optional OpenAI Responses/Codex processing tier: auto, default, flex, priority, or scale. Use only with those APIs; omit for other APIs or the provider default>
 thinking: <optional thinking level: ${THINKING_LEVELS.join(", ")}. Omit to inherit>
 max_turns: <optional max agentic turns. 0 or omit for unlimited (default)>
 prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is appended to default prompt). Default: replace>
@@ -3321,6 +3323,7 @@ Guidelines for choosing settings:
 - Use prompt_mode: replace for fully custom agents with their own personality/instructions
 - Set inherit_context: true if the agent needs to know what was discussed in the parent conversation
 - Set isolated: true if the agent should NOT have access to MCP servers or other extensions
+- Set service_tier: priority only when the model uses an OpenAI Responses/Codex API; omit it for other providers
 - Set output_transcript: false to skip writing this agent's transcript; this alone doesn't keep the run off disk (persist_session, isolation: worktree commits, and memory still write) — set those too if that's the goal
 - Only include frontmatter fields that differ from defaults — omit fields where the default is fine
 
@@ -3637,7 +3640,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
           id: "showModel",
           label: "Show model",
           description:
-            "Name the model driving each agent, and the thinking level it is running at, on the widget's running rows. The Agent tool result and the conversation viewer show the pair either way — this adds it to the widget, where the row is already dense.",
+            "Name the model driving each agent, its thinking level, and configured OpenAI service tier when the effective API supports it, on the widget's running rows. The Agent tool result and the conversation viewer show these details when applicable — this adds them to the widget, where the row is already dense.",
           currentValue: isShowModelEnabled() ? "on" : "off",
           values: ["on", "off"],
         },

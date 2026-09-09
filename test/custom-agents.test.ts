@@ -107,6 +107,7 @@ description: Security Auditor
 tools: read, grep, find
 model: anthropic/claude-opus-4-6
 thinking: high
+service_tier: priority
 max_turns: 30
 persist_session: true
 output_transcript: false
@@ -129,6 +130,7 @@ You are a security auditor.`);
     expect(agent.builtinToolNames).toEqual(["read", "grep", "find"]);
     expect(agent.model).toBe("anthropic/claude-opus-4-6");
     expect(agent.thinking).toBe("high");
+    expect(agent.serviceTier).toBe("priority");
     expect(agent.maxTurns).toBe(30);
     expect(agent.persistSession).toBe(true);
     expect(agent.outputTranscript).toBe(false);
@@ -159,6 +161,7 @@ Just a prompt.`);
     expect(agent.skills).toBe(true); // inherit all
     expect(agent.model).toBeUndefined();
     expect(agent.thinking).toBeUndefined();
+    expect(agent.serviceTier).toBeUndefined();
     expect(agent.maxTurns).toBeUndefined();
     expect(agent.persistSession).toBeUndefined();
     expect(agent.outputTranscript).toBeUndefined();
@@ -423,6 +426,26 @@ Think hard.`);
 
     const result = loadCustomAgents(tmpDir);
     expect(result.get("deepthink")!.thinking).toBe("max");
+  });
+
+  it.each(["auto", "default", "flex", "priority", "scale"] as const)("parses service_tier: %s", (serviceTier) => {
+    writeAgent(`service-${serviceTier}`, `---
+service_tier: ${serviceTier}
+---
+
+Use the configured service tier.`);
+
+    expect(loadCustomAgents(tmpDir).get(`service-${serviceTier}`)!.serviceTier).toBe(serviceTier);
+  });
+
+  it("ignores an invalid service_tier", () => {
+    writeAgent("bad-service-tier", `---
+service_tier: turbo
+---
+
+Use the default service tier.`);
+
+    expect(loadCustomAgents(tmpDir).get("bad-service-tier")!.serviceTier).toBeUndefined();
   });
 
   it("accepts max_turns: 0 as unlimited", () => {
@@ -1090,6 +1113,7 @@ Good body.`);
       const loaded = roundTrip({
         displayName: "RT",
         model: "anthropic/claude-haiku-4-5",
+        serviceTier: "priority",
         thinking: "low",
         maxTurns: 7,
         allowedSubagents: ["Explore"],
@@ -1104,6 +1128,7 @@ Good body.`);
       });
       expect(loaded.displayName).toBe("RT");
       expect(loaded.model).toBe("anthropic/claude-haiku-4-5");
+      expect(loaded.serviceTier).toBe("priority");
       expect(loaded.thinking).toBe("low");
       expect(loaded.maxTurns).toBe(7);
       expect(loaded.allowedSubagents).toEqual(["Explore"]);

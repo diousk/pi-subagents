@@ -17,6 +17,9 @@ export const DEFAULT_AGENT_NAMES = ["general-purpose", "Explore", "Plan"] as con
 /** Memory scope for persistent agent memory. */
 export type MemoryScope = "user" | "project" | "local";
 
+/** OpenAI Responses/Codex request processing tier. */
+export type ServiceTier = "auto" | "default" | "flex" | "priority" | "scale";
+
 /**
  * Isolation mode for agent execution.
  *
@@ -53,6 +56,8 @@ export interface AgentConfig {
   skills: true | string[] | false;
   model?: string;
   thinking?: ThinkingLevel;
+  /** OpenAI Responses/Codex processing tier; ignored by other APIs. */
+  serviceTier?: ServiceTier;
   maxTurns?: number;
   /** Persist this subagent as a normal pi session instead of keeping it in memory only. */
   persistSession?: boolean;
@@ -287,6 +292,8 @@ export interface AgentInvocation {
   modelId?: string;
   /** The level actually in effect, once a session exists to report one. */
   thinking?: EffectiveThinkingLevel;
+  /** Configured OpenAI Responses/Codex processing tier, when applicable. */
+  serviceTier?: ServiceTier;
   /**
    * What the caller asked for, kept only when they did not get it — pi clamped
    * the level to the model's capabilities, or an agent file's frontmatter

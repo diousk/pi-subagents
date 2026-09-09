@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { renderRunningAgentStatus } from "../src/index.js";
 import type { WidgetMode } from "../src/types.js";
-import { type AgentActivity, AgentWidget, fgPreservingNestedStyles, formatCost, formatSessionTokens } from "../src/ui/agent-widget.js";
+import { type AgentActivity, AgentWidget, buildInvocationTags, fgPreservingNestedStyles, formatCost, formatSessionTokens } from "../src/ui/agent-widget.js";
 
 describe("formatSessionTokens", () => {
   const theme = { fg: (c: string, s: string) => `<${c}>${s}</${c}>`, bold: (s: string) => s };
@@ -51,6 +51,10 @@ describe("renderRunningAgentStatus", () => {
       "⠋ thinking: xhigh · 4 tool uses",
       "  ⎿  thinking…",
     ]);
+  });
+
+  it("labels a configured service tier", () => {
+    expect(buildInvocationTags({ serviceTier: "priority" }).tags).toContain("service tier: priority");
   });
 });
 
@@ -177,6 +181,20 @@ describe("AgentWidget", () => {
 
     expect(renderLines(manager, "bg", () => "background", true))
       .not.toContain("anthropic/claude-sonnet-4-6");
+  });
+
+  it("shows a configured service tier on a running row", () => {
+    const record = makeRecord("bg", { isBackground: true });
+    record.invocation = {
+      modelName: "sonnet 4.6",
+      modelId: "openai/gpt-5.6-sol",
+      thinking: "high",
+      serviceTier: "priority",
+    };
+    const manager = { listAgents: () => [record] };
+
+    expect(renderLines(manager, "bg", () => "background", true))
+      .toContain("service tier: priority");
   });
 
   it("discloses a level the run did not honor", () => {

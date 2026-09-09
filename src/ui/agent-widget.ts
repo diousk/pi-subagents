@@ -191,7 +191,9 @@ export function getPromptModeLabel(type: SubagentType): string | undefined {
  *
  * Both model forms come back so each surface can pick by width; the
  * "(asked X)" annotation is applied here rather than by callers, so a value the
- * spawn did not honor cannot be rendered as though it had been (#182).
+ * spawn did not honor cannot be rendered as though it had been (#182). A service
+ * tier is emitted only when the effective API supports it; callers leave it unset
+ * for unsupported providers so an ignored request is not shown as active.
  */
 export function buildInvocationTags(
   invocation: AgentInvocation | undefined,
@@ -202,6 +204,7 @@ export function buildInvocationTags(
     value && requested && requested !== value ? `${value} (asked ${requested})` : value;
   const thinking = asked(invocation.thinking, invocation.requestedThinking);
   if (thinking) tags.push(`thinking: ${thinking}`);
+  if (invocation.serviceTier) tags.push(`service tier: ${invocation.serviceTier}`);
   if (invocation.isolated) tags.push("isolated");
   if (invocation.isolation === "worktree") tags.push("worktree");
   if (invocation.inheritContext) tags.push("inherit context");
@@ -284,10 +287,10 @@ export class AgentWidget {
     private showCost: () => boolean = () => false,
     /**
      * Read live at render time, like `mode`. Whether running agents name the
-     * model driving them and the thinking level it is running at. Defaults to
-     * off — the extension supplies the user's `showModel` setting — because the
-     * row is already dense and the same pair is on the tool result and in the
-     * conversation viewer unconditionally.
+     * model, thinking level, and configured service tier when the effective API
+     * supports it. Defaults to off — the extension supplies the user's `showModel`
+     * setting — because the row is already dense and the same details are on the
+     * tool result and in the conversation viewer when applicable.
      */
     private showModel: () => boolean = () => false,
   ) {}
@@ -469,6 +472,8 @@ export class AgentWidget {
         if (modelName) parts.push(modelName);
         const thinkingTag = tags.find(tag => tag.startsWith("thinking: "));
         if (thinkingTag) parts.push(thinkingTag);
+        const serviceTierTag = tags.find(tag => tag.startsWith("service tier: "));
+        if (serviceTierTag) parts.push(serviceTierTag);
       }
       if (bg) parts.push(formatTurns(bg.turnCount, bg.maxTurns));
       if (toolUses > 0) parts.push(`${toolUses} tool use${toolUses === 1 ? "" : "s"}`);
