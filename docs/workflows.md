@@ -250,6 +250,8 @@ Any other key is rejected **by name** at the call. Note that this checks option 
 
 Combination rules: `resume` cannot be combined with `agentType`, `model`, `effort`, `isolation`, `gate` or `schema` — a resumed child keeps the agent type, model and tree it was started with, and its session predates the `StructuredOutput` tool.
 
+With Pi 0.99.1, select Sol with `model: "openai-codex/gpt-6.1-sol"` (Pi's Codex login) or `model: "openai/gpt-6.1-sol"` (API key). Use `effort: "low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`; Pi maps `minimal` to provider effort `low`. A custom `agentType` can pin `service_tier: fast` in its agent file; `service_tier` is not a workflow option. See the [README's model reference](../README.md#frontmatter-fields).
+
 ### `pipeline()` and `parallel()`
 
 ```js

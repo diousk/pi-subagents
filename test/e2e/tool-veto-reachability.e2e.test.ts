@@ -1,39 +1,9 @@
 /**
- * tool-veto-reachability.e2e.test.ts — reachability guard for the `ext:` turn-1
- * tool veto (issue #125).
- *
- * `installExtensionToolScope` enforces `ext:` narrowing two ways. Re-narrowing the
- * ACTIVE set on `turn_end` is built entirely on public API (`getAllTools`,
- * `getActiveToolNames`, `setActiveToolsByName`) and is covered by the unit tests.
- * The second half is not: turn 1 cannot be narrowed at all — `before_agent_start`
- * fires INSIDE `prompt()` and may widen the tool set, but `createContextSnapshot()`
- * freezes that turn's tools immediately after, leaving no window — so out-of-scope
- * calls are vetoed at call time by wrapping `session.agent.beforeToolCall`.
- *
- * That wrap is the one place this extension reaches past the documented surface:
- *   - `ExtensionBindings` has no tool_call hook, so there is no SDK-level way to
- *     inject a veto into a session we construct. Pi exposes the veto to EXTENSIONS
- *     as `pi.on("tool_call") -> { block, reason }`, but we are the SDK caller here,
- *     not an extension bound to the child session.
- *   - So we wrap the property Pi itself installs in the AgentSession constructor
- *     (`_installAgentToolHooks`), chaining to the prior hook so Pi's own `tool_call`
- *     dispatch still runs.
- *
- * The unit tests assert our wrapper's behavior against a MOCK session whose `agent`
- * is a hand-written `{ beforeToolCall: undefined }`. That mock cannot catch the one
- * thing that would silently break the veto: if a future Pi renames `beforeToolCall`,
- * stops installing it, makes `agent` non-enumerable/private, or moves the veto
- * elsewhere, our assignment lands on a property nothing reads. Every test still
- * passes, and out-of-scope tools become callable on turn 1 with no failing test.
- *
- * This guard closes exactly that gap and nothing else. It asserts against a REAL
- * session that:
- *   1. Pi installs its own `beforeToolCall` (so there IS a prior hook to chain), and
- *   2. after `runAgent`, ours is installed and vetoes an out-of-scope tool in the
- *      `{ block, reason }` shape Pi honors.
- *
- * No network/LLM: a faux Model satisfies `createAgentSession`, and the veto is
- * invoked directly rather than through a model turn.
+ * Reachability guard for the ext: call-time veto (issue #125).
+ * Pi's Agent hook dispatches the child loader's bound tool_call handlers.
+ * Exercise that real dispatch to ensure an out-of-scope call is blocked and
+ * an in-scope call reaches the other extension handlers. Nested ctx.executeTool
+ * dispatch is covered separately in pi-0991.test.ts.
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -43,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runAgent } from "../../src/agent-runner.js";
 import { registerAgents } from "../../src/agent-types.js";
 import type { AgentConfig } from "../../src/types.js";
+import { fauxModelBackend } from "../helpers/faux-model-backend.js";
 import { registerFauxProvider } from "../helpers/pi-ai.js";
 
 // Real pi-mono (loader + dynamic extension import + session construction).
@@ -73,7 +44,7 @@ describe("tool veto reachability against real pi-mono", () => {
     rmSync(cwd, { recursive: true, force: true });
   });
 
-  it("pi installs a chainable beforeToolCall, and runAgent's veto blocks out-of-scope tools", async () => {
+  it("Pi dispatches the bound guard and blocks out-of-scope tools", async () => {
     registerAgents(
       new Map([
         [
@@ -91,6 +62,7 @@ describe("tool veto reachability against real pi-mono", () => {
             inheritContext: false,
             runInBackground: false,
             isolated: false,
+            persistSession: false,
           } as AgentConfig,
         ],
       ]),
@@ -98,6 +70,7 @@ describe("tool veto reachability against real pi-mono", () => {
 
     const model = faux.getModel();
     const modelRegistry: any = {
+      runtime: fauxModelBackend(model).modelRuntime,
       find: () => model,
       getAll: () => [model],
       getAvailable: () => [model],
@@ -117,15 +90,12 @@ describe("tool veto reachability against real pi-mono", () => {
         model,
         onSessionCreated: (s: any) => {
           session = s;
-          // By onSessionCreated our wrapper is already installed, so this being a
-          // function proves the property is reachable and writable. Pi installing
-          // its own in the constructor is what gives us something to chain to —
-          // asserted below via the in-scope path returning undefined rather than
-          // throwing on a missing prior hook.
+          // Pi retains ownership of the hook and dispatches the bound guard.
           priorIsFunction = typeof s.agent?.beforeToolCall === "function";
         },
       });
-    } catch {
+    } catch (error) {
+      if (!session) throw error;
       // A faux-model turn may not complete; the veto is fixed at construction.
     }
 
@@ -136,8 +106,7 @@ describe("tool veto reachability against real pi-mono", () => {
       session.agent.beforeToolCall({ toolCall: { name: "beta_tool" }, args: {} }),
     ).resolves.toMatchObject({ block: true, reason: expect.any(String) });
 
-    // In scope: must NOT be blocked. Reaching Pi's own prior hook without throwing
-    // also proves the chain is intact (a clobbered/absent prior would surface here).
+    // In-scope tools pass Pi's bound event dispatch.
     await expect(
       session.agent.beforeToolCall({ toolCall: { name: "alpha_read" }, args: {} }),
     ).resolves.toSatisfy((r: any) => !r?.block);

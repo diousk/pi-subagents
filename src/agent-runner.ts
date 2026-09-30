@@ -14,6 +14,7 @@ import {
   DefaultResourceLoader,
   type ExtensionAPI,
   getAgentDir,
+  type ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
@@ -94,6 +95,8 @@ export function installServiceTierPayload(
  * single-file extensions to the basename minus `.ts`/`.js`.
  */
 export function extensionCanonicalName(extPath: string): string {
+  if (extPath.startsWith("builtin:")) return extPath.slice("builtin:".length).toLowerCase();
+  if (extPath.startsWith("<inline:") && extPath.endsWith(">")) return extPath.slice(8, -1).toLowerCase();
   const base = basename(extPath);
   const name = base === "index.ts" || base === "index.js"
     ? basename(dirname(extPath))
@@ -159,6 +162,7 @@ function extensionPackageName(extPath: string): string | undefined {
  */
 export function extensionCanonicalNames(extPath: string): string[] {
   const canonical = extensionCanonicalName(extPath);
+  if (extPath.startsWith("builtin:") || extPath.startsWith("<inline:")) return [canonical];
   const pkg = extensionPackageName(extPath);
   return pkg && pkg !== canonical ? [canonical, pkg] : [canonical];
 }
@@ -250,12 +254,13 @@ export function parseExtSelectors(entries: string[]): {
  * snapshotted. `registerTool` writes into the very `extension.tools` maps this reads,
  * so `inScope()` sees late arrivals on the next call.
  *
- * Two enforcement points, because neither covers the whole picture:
+ * The active set and call-time checks cover different parts of scope:
  *
  *   - `turn_end` re-narrows the ACTIVE set. pi emits `turn_end` immediately before
  *     `prepareNextTurn` re-snapshots `agent.state.tools`, and session listeners run
  *     synchronously, so the narrow lands in time for turns 2..N.
- *   - `beforeToolCall` blocks out-of-scope calls. Turn 1 cannot be narrowed at all:
+ *   - The loader's bound `tool_call` handler blocks direct and nested calls.
+ *     Turn 1 cannot be narrowed at all:
  *     `before_agent_start` fires INSIDE `prompt()` and may widen the tool set, but
  *     `createContextSnapshot()` freezes that turn's tools immediately after — there
  *     is no hook in between. A call-time check is the only correct guard there.
@@ -285,7 +290,7 @@ export function installExtensionToolScope(
      */
     readmitToolNames: Set<string>;
   },
-): void {
+): (toolName: string) => boolean {
   const { loader, toolNames, disallowedSet, extNames, narrowing, readmitToolNames } = ctx;
 
   // The names allowed right now. Mirrors the `ext:` opt-in flip: when any `ext:`
@@ -309,7 +314,7 @@ export function installExtensionToolScope(
     }
     for (const name of EXCLUDED_TOOL_NAMES) keep.delete(name);
     // Injected tools are legitimately active for this agent — re-admit them so
-    // the renarrow keeps them in the active set and beforeToolCall doesn't
+    // the renarrow keeps them in the active set and the call-time guard doesn't
     // block them. Already vetted against `disallowed_tools` by the caller,
     // which is the only place that knows which kind may be taken back.
     for (const name of readmitToolNames) keep.add(name);
@@ -318,8 +323,14 @@ export function installExtensionToolScope(
 
   const renarrow = () => {
     const allowed = inScope();
-    const next = session.getAllTools().map((t) => t.name).filter((n) => allowed.has(n));
     const current = session.getActiveToolNames();
+    // Keep deferred/codemode tools callable without promoting them into model
+    // declarations. Explicit activation by an extension is preserved in scope.
+    const next = session.getAllTools().filter((tool) =>
+      allowed.has(tool.name) && (
+        tool.exposure === "direct" || tool.exposure === "model-only" || current.includes(tool.name)
+      ),
+    ).map((tool) => tool.name);
     // setActiveToolsByName unconditionally rebuilds the system prompt, so skip
     // the no-op that steady-state turns would otherwise pay for every turn.
     if (next.length !== current.length || next.some((n, i) => n !== current[i])) {
@@ -335,16 +346,7 @@ export function installExtensionToolScope(
     if (event.type === "turn_end") renarrow();
   });
 
-  const priorBeforeToolCall = session.agent.beforeToolCall;
-  session.agent.beforeToolCall = async (context, signal) => {
-    if (!inScope().has(context.toolCall.name)) {
-      return {
-        block: true,
-        reason: `Tool "${context.toolCall.name}" is not available to this subagent.`,
-      };
-    }
-    return priorBeforeToolCall?.(context, signal);
-  };
+  return (toolName) => inScope().has(toolName);
 }
 
 /** Default max turns. undefined = unlimited (no turn limit). */
@@ -768,6 +770,7 @@ export async function runAgent(
   // must compare against this, not the surviving set (absence from survivors is
   // an exclude *succeeding*).
   let discoveredNames: Set<string> | undefined;
+  let toolInScope: ((toolName: string) => boolean) | undefined;
   const extensionsOverride: ((base: LoadExtensionsResult) => LoadExtensionsResult) | undefined =
     noExtensions || (loadAll && !hasExcludes)
       ? undefined
@@ -776,6 +779,7 @@ export async function runAgent(
           return {
             ...base,
             extensions: base.extensions.filter((e) => {
+              if (e.path === "<inline:subagent-tool-scope>") return true;
               const canons = extensionCanonicalNames(e.path);
               if (canons.some((n) => excludeNames.has(n))) return false; // exclude wins
               return loadAll || canons.some((n) => keepNames.has(n));
@@ -788,6 +792,19 @@ export async function runAgent(
     agentDir,
     noExtensions,
     additionalExtensionPaths,
+    // Pi's nested ctx.executeTool calls dispatch tool_call directly, and prompt
+    // setup can replace agent.beforeToolCall. Enforce scope in that dispatch too.
+    extensionFactories: noExtensions ? [] : [{
+      name: "subagent-tool-scope",
+      hidden: true,
+      factory: (pi) => {
+        pi.on("tool_call", (event) => {
+          if (toolInScope && !toolInScope(event.toolName)) {
+            return { block: true, reason: `Tool "${event.toolName}" is not available to this subagent.` };
+          }
+        });
+      },
+    }],
     extensionsOverride,
     noSkills,
     noPromptTemplates: true,
@@ -1014,24 +1031,14 @@ export async function runAgent(
         })
       : SessionManager.inMemory(effectiveCwd);
 
-  // Pi 0.80.8 replaced createAgentSession's modelRegistry option with
-  // modelRuntime, but ExtensionContext still exposes only the registry facade.
-  // Pass both so the full supported Pi range retains the parent's providers.
-  const parentModelRuntime = (ctx.modelRegistry as unknown as { runtime?: unknown }).runtime;
-  const sessionOpts: Parameters<typeof createAgentSession>[0] & {
-    modelRegistry: ExtensionContext["modelRegistry"];
-    modelRuntime?: unknown;
-  } = {
+  // ExtensionContext exposes the registry facade; its runtime owns provider auth.
+  const parentModelRuntime = (ctx.modelRegistry as unknown as { runtime?: ModelRuntime }).runtime;
+  const sessionOpts: Parameters<typeof createAgentSession>[0] = {
     cwd: effectiveCwd,
     agentDir,
     sessionManager,
     settingsManager,
-    modelRegistry: ctx.modelRegistry,
-    // `as never` is what keeps this assignable across the supported Pi range:
-    // pre-0.80.8 the field exists only via the `modelRuntime?: unknown` shim
-    // above, while newer Pi types it as `ModelRuntime` — a shape an opaque
-    // `unknown` read off the private facade field can never satisfy.
-    ...(parentModelRuntime !== undefined && { modelRuntime: parentModelRuntime as never }),
+    modelRuntime: parentModelRuntime,
     model,
     tools: sessionTools,
     customTools: [...nestedTools, ...structuredTools],
@@ -1073,7 +1080,7 @@ export async function runAgent(
   // handled below by re-deriving scope from the loader's live extension maps —
   // `registerTool` writes into those same maps, so late arrivals are judged too.
   if (!noExtensions) {
-    installExtensionToolScope(session, {
+    toolInScope = installExtensionToolScope(session, {
       loader,
       toolNames,
       disallowedSet,

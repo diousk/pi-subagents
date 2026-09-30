@@ -19,11 +19,12 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Context, fauxToolCall } from "@earendil-works/pi-ai";
+import { fauxToolCall, type TranscriptContext } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerAgents } from "../src/agent-types.js";
 import { loadCustomAgents } from "../src/custom-agents.js";
 import { encodeCwd } from "../src/output-file.js";
+import { currentTools } from "./helpers/pi-ai.js";
 import {
   agentCall,
   type FauxReply,
@@ -37,7 +38,7 @@ vi.setConfig({ testTimeout: 30_000 });
 const WORKER_MARKER = "WORKER-REACHED-THE-TOP";
 
 /** First user message of a session — the only stable way to tell three faux sessions apart. */
-function firstUserText(context: Context): string {
+function firstUserText(context: TranscriptContext): string {
   const first = context.messages.find((m) => m.role === "user");
   const content = first?.content;
   if (typeof content === "string") return content;
@@ -45,7 +46,7 @@ function firstUserText(context: Context): string {
 }
 
 /** Tool results in a session context, newest last, with their tool names. */
-function toolResultTexts(context: Context): Array<{ name: string; text: string }> {
+function toolResultTexts(context: TranscriptContext): Array<{ name: string; text: string }> {
   const out: Array<{ name: string; text: string }> = [];
   for (const m of context.messages) {
     if (m.role !== "toolResult") continue;
@@ -99,9 +100,9 @@ describe("nested delegation e2e (real pi-mono, faux model)", () => {
     /** Tool names each session was actually offered, keyed by who it is. */
     const toolsSeen = new Map<string, string[]>();
 
-    const respond = (context: Context): FauxReply => {
+    const respond = (context: TranscriptContext): FauxReply => {
       const text = firstUserText(context);
-      const names = (context.tools ?? []).map((t) => t.name);
+      const names = currentTools(context).map((t) => t.name);
 
       // Leaf: no nested tools (it never opted in) — just answer.
       if (text.includes("Do the leaf work")) {
@@ -185,7 +186,7 @@ describe("nested delegation e2e (real pi-mono, faux model)", () => {
     const transcriptRoot = join(tmpdir(), `pi-subagents-${process.getuid?.() ?? 0}`, encodeCwd(cwd));
     rmSync(transcriptRoot, { recursive: true, force: true });
 
-    const respond = (context: Context): FauxReply => {
+    const respond = (context: TranscriptContext): FauxReply => {
       const text = firstUserText(context);
 
       if (text.includes("Do the leaf work")) return WORKER_MARKER;

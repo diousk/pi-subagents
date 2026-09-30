@@ -18,7 +18,7 @@ export const DEFAULT_AGENT_NAMES = ["general-purpose", "Explore", "Plan"] as con
 export type MemoryScope = "user" | "project" | "local";
 
 /** OpenAI Responses/Codex request processing tier. */
-export type ServiceTier = "auto" | "default" | "flex" | "priority" | "scale";
+export type ServiceTier = "auto" | "default" | "flex" | "fast" | "priority" | "scale";
 
 /**
  * Isolation mode for agent execution.

@@ -76,7 +76,9 @@ npm pack --dry-run
 
 The `prepublishOnly` script runs lint, typecheck, tests, and the build before npm uploads the package. After publishing, install it with `pi install npm:@diousk/pi-subagents-fast`.
 
-Requires pi **0.84.0 or newer**: the [`SubagentWorkflow`](#subagentworkflow) tool builds on `constrainedSampling` (pi 0.82.0) and pi-tui's `stripTerminalSequences` (0.84.0). The `peerDependencies` range declares it, so npm flags an older pi at install time.
+Requires **Pi 0.99.1 or newer** and **Node.js 22.19.0 or newer**. Update Pi before installing this extension. The `peerDependencies` range declares the minimum, so npm flags an older Pi at install time.
+
+The development and CI baseline is **Pi 0.99.1**. Use that version or newer for `openai/gpt-6.1-sol` (API key) or `openai-codex/gpt-6.1-sol` (your Pi Codex login). Child sessions reuse the parent's configured providers and authentication; model limits and pricing come from Pi's provider catalog. See the [Pi 0.99.1 release](https://pi.dev/changelog/releases/0.99.1).
 
 ### Other hosts
 
@@ -337,8 +339,8 @@ All fields are optional — sensible defaults for everything.
 | `disallowed_tools` | — | Comma-separated tools to deny even if extensions provide them |
 | `isolation` | — | Set to `worktree` to run in an isolated git worktree, or `off` to refuse one even when the caller passes `isolation: "worktree"` (frontmatter is authoritative). `none`, `no`, and `false` are accepted spellings of `off` |
 | `model` | inherit parent | Model — `provider/modelId` or fuzzy name (`"haiku"`, `"sonnet"`). Resolved tolerantly (`.`/`-` and a trailing date stamp are interchangeable) and falls back to the same model under another provider if the named one doesn't have it |
-| `service_tier` | — | OpenAI Responses/Codex processing tier: `auto`, `default`, `flex`, `priority`, or `scale`. Applied only to `openai-responses` and `openai-codex-responses`; omitted preserves the provider default, and other APIs ignore it without displaying it as active |
-| `thinking` | inherit | off, minimal, low, medium, high, xhigh, max — actual availability depends on your pi version and model; pi clamps unsupported levels down |
+| `service_tier` | — | OpenAI Responses/Codex processing tier: `auto`, `default`, `flex`, `fast`, `priority`, or `scale`. Applied only to `openai-responses` and `openai-codex-responses`; omitted preserves the provider default, and other APIs ignore it without displaying it as active |
+| `thinking` | inherit | off, minimal, low, medium, high, xhigh, max — actual availability depends on your pi version and model; pi maps or clamps unsupported levels |
 | `max_turns` | unlimited | Max agentic turns before graceful shutdown. `0` or omit for unlimited |
 | `persist_session` | `subagents.json` `rememberAgents` (default `true`) | Persist this subagent as a normal pi session instead of keeping the session in memory only; overrides the `rememberAgents` project default in both directions. It records its spawning session as parent, so it nests under it in `/resume`. The subagent's `.output` transcript is still written either way unless `output_transcript: false` |
 | `output_transcript` | `true` (or `subagents.json` `outputTranscript`) | Write this subagent's `.output` transcript; when set, overrides the `subagents.json` `outputTranscript` default. Set `false` to write no transcript file or path. Governs only the transcript — independent of `persist_session`, `isolation: worktree`, and `memory:` |
@@ -350,7 +352,17 @@ All fields are optional — sensible defaults for everything.
 | `isolated` | `false` | Hermetic specialist mode: forces `extensions: false` + `skills: false` + drops `ext:` selectors. Only built-in tools. Distinct from `isolation: worktree` (filesystem) |
 | `enabled` | `true` | Set to `false` to disable an agent (useful for hiding a default agent per-project) |
 
-For an OpenAI Responses or Codex agent, set `service_tier: priority` to request priority processing. The UI shows the requested tier only when the effective model uses one of those APIs; other providers keep their normal request behavior and do not display a tier as active.
+For an OpenAI Responses or Codex agent, set `service_tier: fast` to request fast processing; `priority` remains a supported alias. Availability depends on the provider and account. The UI shows the requested tier only when the effective model uses one of those APIs. See [OpenAI fast mode](https://developers.openai.com/api/docs/guides/fast-mode).
+
+GPT-6.1 Sol supports `low`, `medium`, `high`, `xhigh`, and `max` reasoning. In Pi 0.99.1, `minimal` maps to provider effort `low`; `off` is clamped to that same alias because Sol cannot disable reasoning. The UI reports Pi's logical thinking level. Prefer explicit supported levels in agent files:
+
+```yaml
+model: openai-codex/gpt-6.1-sol
+thinking: medium
+service_tier: fast
+```
+
+Sol requires the Responses API for tool use. Selecting its Pi catalog entry chooses the corresponding Responses transport; no custom provider override is needed. See the [Sol model reference](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
 
 Frontmatter is authoritative. If an agent file sets `model`, `thinking`, `service_tier`, `max_turns`, `inherit_context`, `run_in_background`, `isolated`, or `isolation`, those values are locked for that agent. For fields exposed by the `Agent` tool, its parameters only fill values the agent config leaves unspecified; `service_tier` is frontmatter-only.
 
@@ -408,6 +420,8 @@ A few rules the examples don't make obvious:
 - `extensions:` is the sole loading authority. `ext:foo` in `tools:` narrows what surfaces; it can't load `foo` on its own. Mismatches fire `extension-error:…` warnings.
 - Any `ext:` entry flips extension tools to an explicit allowlist — unnamed extensions still load (handlers fire) but expose no tools. So `tools: "*, ext:mcp/search"` exposes only `search` from `mcp`, nothing from any other extension.
 - Extension names match case-insensitively (`[Mcp]` = `[mcp]`); tool names in `ext:foo/bar` stay case-sensitive.
+- Synthetic extension identities match their logical names: `builtin:mcp` as `mcp`, `builtin:codemode` as `codemode`, and `<inline:foo>` as `foo`. This matches loaded extensions; it does not load Pi CLI built-in factories into SDK child sessions.
+- Scope checks also apply to nested `ctx.executeTool()` calls, including deferred and codemode tools. Deferred tools keep their exposure and are not automatically promoted into model declarations; extension-activated tools remain active only within the agent's scope.
 - Extensions that register tools **lazily** work too. MCP-backed extensions typically can't enumerate their tools until their servers connect, so they register from `session_start` or `before_agent_start` rather than at load. Subagent scoping is re-derived as tools appear, so these surface normally — including under `ext:` selectors, which keep narrowing correctly no matter when a tool shows up.
 - Extensions bound into a subagent see **both ends** of that session's lifecycle: `session_start` when the agent starts, `session_shutdown` (reason `quit`) when its session is disposed — on quit, and when its record is evicted ~10 minutes after it finishes. Release per-session resources there; anything left armed outlives the session it belongs to. Handlers are given three seconds on quit, after which teardown proceeds regardless.
 - An installed **package** extension matches by its package short name (`@scope/pi-subagents` → `[pi-subagents]`), in addition to its path-derived name (a package whose entry is `src/index.ts` also answers to `[src]`). Prefer the package name — the path-derived one is incidental.
@@ -667,7 +681,7 @@ Runtime tuning values set via `/agents` → Settings (max concurrency, max foreg
 
 **Report usage to session** (`reportUsage`, default `false`): whether subagent spend is added to *this* session's own totals. Subagents run in their own pi sessions, so by default pi's footer, statusline and `/cost` count only what the main model spent — a session that delegated most of its work reads as nearly free. Turn it on and each `Agent` / `get_subagent_result` / `steer_subagent` result carries the spend accumulated since the last one, which pi folds into `getSessionStats()`; `/cost` attributes it to the **Tools/summaries** bucket. Toggle via `/agents → Settings → Report usage to session`; applied live.
 
-Three things worth knowing about the numbers. Every token component is reported, `cacheRead` included — the cached prefix genuinely is re-read and re-billed on every call, and pi counts it the same way for the session's own messages, so withholding it would make a subagent's rows count differently from every other row in one total. (The extension's *own* token displays still leave it out, which is a different question: there it inflates a reading of how much work was done.) Cost is pi's own per-message figure, priced from the model's listed rates; a model pi has no rates for contributes zero rather than an estimate. And the context-window percentage is untouched: pi derives it from assistant messages alone, so a delegating session's context doesn't appear to fill up faster. Agents that finish in the background have no tool result of their own to ride on, so their spend is carried by the next one you make — the footer catches up on the following call, not the moment they finish.
+Three things worth knowing about the numbers. Every token component is reported, `cacheRead` included — the cached prefix genuinely is re-read and re-billed on every call, and pi counts it the same way for the session's own messages, so withholding it would make a subagent's rows count differently from every other row in one total. (The extension's *own* token displays still leave it out, which is a different question: there it inflates a reading of how much work was done.) Cost is pi's own per-message figure, priced from the model's listed rates; a model pi has no rates for contributes zero rather than an estimate. Reported subagent token counts do not inflate the parent's context-window percentage. On Pi 0.99.1 the tool-result text itself occupies context and is included in Pi's projection estimate. Agents that finish in the background have no tool result of their own to ride on, so their spend is carried by the next one you make — the footer catches up on the following call, not the moment they finish.
 
 **Show cost** (`showCost`, default `false`): whether the subagent surfaces print an estimated cost beside their token counts — the widget (running *and* finished lines), [FleetView](#fleetview), the conversation viewer, foreground results, `get_subagent_result`, and completion notifications:
 
@@ -695,6 +709,8 @@ Both places report what the run *actually* used, read back from the child sessio
 ```text
   ↳ anthropic/claude-haiku-4-5 · thinking: low (asked max) · background
 ```
+
+For a virtual model, the displayed identity is the session's selected virtual model, rather than the physical model chosen for each response.
 
 Toggle via `/agents → Settings → Show model`; applied live.
 

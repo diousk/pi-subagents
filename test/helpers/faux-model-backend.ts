@@ -4,41 +4,24 @@
  *
  * `registerFauxProvider` scripts the *responses*, but a session still has to get
  * past model lookup and auth before it streams anything, and where that check
- * lives moved with Pi 0.80.8:
- *   - Pi < 0.80.8: `createAgentSession({ modelRegistry })`, auth via
- *     `getApiKeyAndHeaders()`.
- *   - Pi >= 0.80.8: `createAgentSession({ modelRuntime })` — the registry option
- *     is gone entirely — auth via `getAuth()`/`hasConfiguredAuth()`, and the
- *     turn itself streams through `modelRuntime.streamSimple`.
+ * lives in ModelRuntime: auth via `getAuth()`/`hasConfiguredAuth()`, and the
+ * turn itself streams through `modelRuntime.streamSimple`.
  *
- * Passing BOTH spans the supported range: each Pi ignores the option it no
- * longer knows. Structural fakes (not real instances) keep the suites hermetic —
+ * Structural fakes (not real instances) keep the suites hermetic —
  * no auth.json, no network, no local login state.
  */
 import type { Model } from "@earendil-works/pi-ai";
+import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { streamSimple } from "./pi-ai.js";
 
-/** Both option shapes for `createAgentSession`, for the given faux model. */
+/** Runtime option for `createAgentSession`, for the given faux model. */
 export function fauxModelBackend(model: Model<string>): {
-  modelRegistry: any;
-  modelRuntime: any;
+  modelRuntime: ModelRuntime;
 } {
   return {
-    modelRegistry: {
-      find: () => model,
-      getAll: () => [model],
-      getAvailable: () => [model],
-      hasConfiguredAuth: () => true,
-      isUsingOAuth: () => false,
-      // createAgentSession's injected streamFn checks `auth.ok` and throws
-      // Error(auth.error) otherwise — so the `ok: true` flag is mandatory, not
-      // cosmetic. Without it the turn dies before streaming (empty error message).
-      getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "faux", headers: {} }),
-      registerProvider: () => {},
-      unregisterProvider: () => {},
-    },
     modelRuntime: {
       getModel: () => model,
+      getPhysicalModel: () => model,
       getModels: () => [model],
       getProvider: () => undefined,
       getProviders: () => [],
@@ -65,6 +48,6 @@ export function fauxModelBackend(model: Model<string>): {
       // registry, so compat's dispatcher reaches it by `model.api`.
       stream: streamSimple,
       streamSimple,
-    },
+    } as unknown as ModelRuntime,
   };
 }

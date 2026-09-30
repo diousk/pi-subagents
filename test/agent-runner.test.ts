@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+  scopeHandlers,
   createAgentSession,
   defaultResourceLoaderCtor,
   loaderExtensionsRef,
@@ -14,6 +15,7 @@ const {
   settingsManagerCreate,
   settingsManagerGetSessionDir,
 } = vi.hoisted(() => ({
+  scopeHandlers: [] as Array<(event: { toolName: string }) => unknown>,
   createAgentSession: vi.fn(),
   defaultResourceLoaderCtor: vi.fn(),
   loaderExtensionsRef: {
@@ -53,6 +55,9 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
       if (this.opts.noExtensions) {
         loaderExtensionsRef.current = { extensions: [], errors: [], runtime: {} };
         return;
+      }
+      for (const extension of this.opts.extensionFactories ?? []) {
+        extension.factory({ on: (_event: string, handler: (event: { toolName: string }) => unknown) => scopeHandlers.push(handler) });
       }
       if (this.opts.extensionsOverride) {
         loaderExtensionsRef.current = this.opts.extensionsOverride(loaderExtensionsRef.current);
@@ -174,10 +179,9 @@ function createSession(finalText: string) {
     // extension registering after bind by mutating `loaderExtensionsRef`.
     getAllTools: vi.fn(() => {
       const opts = createAgentSession.mock.calls[0]?.[0];
-      return opts ? mockRegistry(opts).map((name) => ({ name })) : [];
+      return opts ? mockRegistry(opts).map((name) => ({ name, exposure: "direct" })) : [];
     }),
-    // pi's Agent; `beforeToolCall` is an optional, assignable hook the scope
-    // installer wraps to block out-of-scope calls on turn 1.
+    // Pi owns the Agent hook; scoping registers a bound tool_call handler.
     agent: { beforeToolCall: undefined, onPayload: undefined } as {
       beforeToolCall?: (context: any, signal?: any) => Promise<any>;
       onPayload?: (payload: unknown, model: { api: string | undefined }) => unknown | undefined | Promise<unknown | undefined>;
@@ -203,6 +207,7 @@ const ctx = {
 const pi = {} as any;
 
 beforeEach(() => {
+  scopeHandlers.length = 0;
   createAgentSession.mockReset();
   defaultResourceLoaderCtor.mockClear();
   getAgentDir.mockClear();
@@ -304,7 +309,7 @@ describe("agent-runner final output capture", () => {
     expect(vi.mocked(buildAgentPrompt).mock.lastCall![4]).not.toHaveProperty("workflowChild");
   });
 
-  it("passes the parent model runtime while retaining the legacy model registry", async () => {
+  it("passes the parent model runtime to preserve configured providers", async () => {
     const { session } = createSession("AUTHENTICATED");
     createAgentSession.mockResolvedValue({ session });
     const modelRuntime = { getAuth: vi.fn(), hasConfiguredAuth: vi.fn() };
@@ -316,18 +321,18 @@ describe("agent-runner final output capture", () => {
     await runAgent(context, "Explore", "Say AUTHENTICATED", { pi });
 
     expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({
-      modelRegistry: context.modelRegistry,
       modelRuntime,
     }));
   });
 
-  it("omits modelRuntime when the legacy registry does not expose one", async () => {
+  it("uses SDK defaults when no runtime was supplied by the context", async () => {
     const { session } = createSession("LEGACY");
     createAgentSession.mockResolvedValue({ session });
 
     await runAgent(ctx, "Explore", "Say LEGACY", { pi });
 
-    expect(createAgentSession.mock.calls[0][0]).not.toHaveProperty("modelRuntime");
+    expect(createAgentSession.mock.calls[0][0].modelRuntime).toBeUndefined();
+    expect(createAgentSession.mock.calls[0][0]).not.toHaveProperty("modelRegistry");
   });
 
   it("suppresses AGENTS.md/CLAUDE.md/APPEND_SYSTEM.md for subagents", async () => {
@@ -434,7 +439,7 @@ describe("agent-runner service tier payload", () => {
     },
   );
 
-  it.each(["auto", "default", "flex", "priority", "scale"] as const)(
+  it.each(["auto", "default", "fast", "flex", "priority", "scale"] as const)(
     "injects %s for a compatible API without a prior callback",
     async (serviceTier) => {
       const session = { agent: { onPayload: undefined } } as any;
@@ -1314,11 +1319,11 @@ describe("agent-runner master tool allowlist", () => {
       });
 
       await expect(
-        session.agent.beforeToolCall?.({ toolCall: { name: "Agent" } }),
+        Promise.resolve(scopeHandlers[0]?.({ toolName: "Agent" })),
       ).resolves.toMatchObject({ block: true });
       // ...while a nested tool that was NOT denied still passes the same gate.
       await expect(
-        session.agent.beforeToolCall?.({ toolCall: { name: "steer_subagent" } }),
+        Promise.resolve(scopeHandlers[0]?.({ toolName: "steer_subagent" })),
       ).resolves.not.toMatchObject({ block: true });
     });
 
@@ -1338,7 +1343,7 @@ describe("agent-runner master tool allowlist", () => {
 
       expect(customToolNames()).toContain("StructuredOutput");
       await expect(
-        session.agent.beforeToolCall?.({ toolCall: { name: "StructuredOutput" } }),
+        Promise.resolve(scopeHandlers[0]?.({ toolName: "StructuredOutput" })),
       ).resolves.not.toMatchObject({ block: true });
     });
 
@@ -1374,7 +1379,7 @@ describe("agent-runner master tool allowlist", () => {
       await runAgent(ctx, "Explore", "go", { pi, structuredOutput: STRUCTURED });
 
       await expect(
-        session.agent.beforeToolCall?.({ toolCall: { name: "StructuredOutput" } }),
+        Promise.resolve(scopeHandlers[0]?.({ toolName: "StructuredOutput" })),
       ).resolves.not.toMatchObject({ block: true });
     });
 
@@ -1390,7 +1395,7 @@ describe("agent-runner master tool allowlist", () => {
 
       expect(customToolNames()).not.toContain("StructuredOutput");
       await expect(
-        session.agent.beforeToolCall?.({ toolCall: { name: "StructuredOutput" } }),
+        Promise.resolve(scopeHandlers[0]?.({ toolName: "StructuredOutput" })),
       ).resolves.toMatchObject({ block: true });
     });
 
@@ -1743,7 +1748,7 @@ describe("agent-runner async extension tool registration", () => {
     expect(session.getActiveToolNames()).not.toContain("drop_me");
   });
 
-  it("beforeToolCall blocks an out-of-scope tool and delegates otherwise", async () => {
+  it("bound tool_call guard blocks an out-of-scope tool and allows scoped calls", async () => {
     // Turn 1 cannot be narrowed — before_agent_start fires inside prompt() and
     // may widen the set after the turn's tools are snapshotted — so a call-time
     // guard is the only correct enforcement there.
@@ -1755,14 +1760,14 @@ describe("agent-runner async extension tool registration", () => {
     await runAgent(ctx, "Explore", "go", { pi });
 
     await expect(
-      session.agent.beforeToolCall?.({ toolCall: { name: "bar_tool" } }),
+      Promise.resolve(scopeHandlers[0]?.({ toolName: "bar_tool" })),
     ).resolves.toMatchObject({ block: true });
     await expect(
-      session.agent.beforeToolCall?.({ toolCall: { name: "foo_tool" } }),
+      Promise.resolve(scopeHandlers[0]?.({ toolName: "foo_tool" })),
     ).resolves.toBeUndefined();
   });
 
-  it("beforeToolCall preserves a hook pi installed before us", async () => {
+  it("bound tool_call guard leaves the Agent hook owned by Pi", async () => {
     setup();
     withExtensions({ "/ext/foo.ts": ["foo_tool"] });
     const { session } = createSession("OK");
@@ -1771,9 +1776,10 @@ describe("agent-runner async extension tool registration", () => {
     createAgentSession.mockResolvedValue({ session });
 
     await runAgent(ctx, "Explore", "go", { pi });
-    await session.agent.beforeToolCall?.({ toolCall: { name: "foo_tool" } });
+    await Promise.resolve(scopeHandlers[0]?.({ toolName: "foo_tool" }));
 
-    expect(prior).toHaveBeenCalledTimes(1);
+    expect(session.agent.beforeToolCall).toBe(prior);
+    expect(prior).not.toHaveBeenCalled();
   });
 
   it("scope outlives runAgent so resumed turns stay narrowed", async () => {
@@ -1794,7 +1800,7 @@ describe("agent-runner async extension tool registration", () => {
     expect(session.getActiveToolNames()).toContain("foo_late");
     expect(session.getActiveToolNames()).not.toContain("bar_late");
     await expect(
-      session.agent.beforeToolCall?.({ toolCall: { name: "bar_late" } }),
+      Promise.resolve(scopeHandlers[0]?.({ toolName: "bar_late" })),
     ).resolves.toMatchObject({ block: true });
   });
 

@@ -428,7 +428,7 @@ Think hard.`);
     expect(result.get("deepthink")!.thinking).toBe("max");
   });
 
-  it.each(["auto", "default", "flex", "priority", "scale"] as const)("parses service_tier: %s", (serviceTier) => {
+  it.each(["auto", "default", "flex", "fast", "priority", "scale"] as const)("parses service_tier: %s", (serviceTier) => {
     writeAgent(`service-${serviceTier}`, `---
 service_tier: ${serviceTier}
 ---

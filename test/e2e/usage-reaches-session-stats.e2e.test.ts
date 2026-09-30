@@ -64,7 +64,6 @@ describe("subagent usage reaches the parent session's stats (real pi)", () => {
       cwd,
       sessionManager: SessionManager.inMemory(cwd),
       model: model as any,
-      modelRegistry: backend.modelRegistry,
       modelRuntime: backend.modelRuntime,
       tools: [],
     } as any);
@@ -115,21 +114,23 @@ describe("subagent usage reaches the parent session's stats (real pi)", () => {
   });
 
   it("leaves the context-window percentage alone", async () => {
-    // pi derives context usage from assistant messages only. If that ever
-    // changed, a delegating session would look like it was filling its context
-    // with work that happened somewhere else entirely — and users would compact
-    // for no reason.
+    // Tool-result text occupies parent context; the child's token counts must
+    // not. Compare identical transcripts with and without the reported usage.
     const session = await realSession();
+    const control = await realSession();
     try {
-      const before = session.getSessionStats().contextUsage?.percent ?? null;
+      control.sessionManager.appendMessage(toolResultCarrying(undefined) as never);
 
       const pool = new PendingUsagePool();
       pool.add({ input: 150_000, output: 400, cacheWrite: 100, cost: 1.5 });
       session.sessionManager.appendMessage(toolResultCarrying(pool.drain()) as any);
 
-      expect(session.getSessionStats().contextUsage?.percent ?? null).toBe(before);
+      expect(session.getSessionStats().contextUsage?.percent ?? null).toBe(
+        control.getSessionStats().contextUsage?.percent ?? null,
+      );
     } finally {
       session.dispose?.();
+      control.dispose?.();
     }
   });
 

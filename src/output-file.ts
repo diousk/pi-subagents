@@ -104,21 +104,27 @@ export function streamToOutputFile(
   cwd: string,
   startIndex?: number,
 ): () => void {
-  // Index of the first message this stream is responsible for. A spawn writes
-  // messages[0] as the initial prompt entry, so it starts at 1. A resume hands
+  // A spawn writes its initial user prompt separately. Pi can project system
+  // messages before that prompt, so skip the first user message by role. A resume hands
   // in the session's length as of just before the run: the session already
   // holds every prior turn, and re-emitting those would duplicate history that
   // is already in the file.
-  let writtenCount = startIndex ?? 1;
+  let writtenCount = startIndex ?? 0;
+  let skipInitialUser = startIndex === undefined;
 
   const flush = () => {
     const messages = session.messages;
     while (writtenCount < messages.length) {
       const msg = messages[writtenCount];
+      if (skipInitialUser && msg.role === "user") {
+        skipInitialUser = false;
+        writtenCount++;
+        continue;
+      }
       const entry = {
         isSidechain: true,
         agentId,
-        type: msg.role === "assistant" ? "assistant" : msg.role === "user" ? "user" : "toolResult",
+        type: msg.role === "assistant" ? "assistant" : msg.role === "user" ? "user" : msg.role === "system" ? "system" : "toolResult",
         message: msg,
         timestamp: new Date().toISOString(),
         cwd,

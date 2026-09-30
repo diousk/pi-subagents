@@ -146,6 +146,20 @@ describe("streamToOutputFile", () => {
     expect(readEntries()).toHaveLength(3);
   });
 
+  it("preserves leading and later system messages without duplicating the initial user prompt", () => {
+    const initial = { role: "system", content: "instructions", toolsAdded: [{ name: "read" }] };
+    const session = makeFakeSession([initial, { role: "user", content: "do the thing" }]);
+    const cleanup = streamToOutputFile(session as never, outPath, "agent-1", "/work");
+    const change = { role: "system", content: "new instructions", toolsRemoved: [{ name: "read" }] };
+    session.push({ role: "assistant", content: [{ type: "text", text: "ok" }] }, change);
+    session.fire({ type: "turn_end" });
+    cleanup();
+    const entries = readEntries();
+    expect(entries.map((entry) => entry.type)).toEqual(["user", "system", "assistant", "system"]);
+    expect(entries[1].message).toEqual(initial);
+    expect(entries[3].message).toEqual(change);
+  });
+
   it("ignores session events other than turn_end", () => {
     const session = makeFakeSession([{ role: "user", content: "go" }]);
     streamToOutputFile(session as never, outPath, "agent-1", "/work");

@@ -31,6 +31,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { extensionCanonicalName, runAgent } from "../src/agent-runner.js";
 import { registerAgents } from "../src/agent-types.js";
 import type { AgentConfig } from "../src/types.js";
+import { fauxModelBackend } from "./helpers/faux-model-backend.js";
 import { registerFauxProvider } from "./helpers/pi-ai.js";
 
 // These tests spin up the REAL pi-mono runtime (loader + dynamic extension
@@ -83,6 +84,7 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
             inheritContext: false,
             runInBackground: false,
             isolated: false,
+            persistSession: false,
             ...cfg,
           } as AgentConfig,
         ],
@@ -90,6 +92,7 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
     );
     const model = faux.getModel();
     const modelRegistry: any = {
+      runtime: fauxModelBackend(model).modelRuntime,
       find: () => model,
       getAll: () => [model],
       getAvailable: () => [model],
@@ -110,7 +113,8 @@ describe("agent-runner end-to-end (real pi-mono session + real extension)", () =
           active = s.getActiveToolNames();
         },
       });
-    } catch {
+    } catch (error) {
+      if (active.length === 0) throw error;
       // A no-op/erroring prompt turn is fine — the gated tool set is fixed at
       // construction, which `onSessionCreated` already captured.
     }

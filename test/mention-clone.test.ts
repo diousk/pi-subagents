@@ -17,10 +17,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Hoisted: vi.mock's factory is lifted above the imports, so it cannot close
 // over ordinary top-level consts.
-const { buildSessionContext, createAgentSession, inMemory } = vi.hoisted(() => ({
+const { buildSessionContext, createAgentSession, inMemory, appendMessage, loaderOptions } = vi.hoisted(() => ({
   buildSessionContext: vi.fn(),
   createAgentSession: vi.fn(),
   inMemory: vi.fn(),
+  appendMessage: vi.fn(),
+  loaderOptions: vi.fn(),
 }));
 
 vi.mock("@earendil-works/pi-coding-agent", async () => {
@@ -29,6 +31,10 @@ vi.mock("@earendil-works/pi-coding-agent", async () => {
     ...actual,
     buildSessionContext,
     createAgentSession,
+    DefaultResourceLoader: class {
+      constructor(options: unknown) { loaderOptions(options); }
+      async reload() {}
+    },
     SessionManager: { ...actual.SessionManager, inMemory },
   };
 });
@@ -45,7 +51,9 @@ const CONVERSATION = [
 beforeEach(() => {
   createAgentSession.mockReset();
   inMemory.mockReset();
-  inMemory.mockReturnValue({ kind: "in-memory-session-manager" } as any);
+  appendMessage.mockReset();
+  loaderOptions.mockReset();
+  inMemory.mockReturnValue({ kind: "in-memory-session-manager", appendMessage });
   buildSessionContext.mockReset();
   buildSessionContext.mockReturnValue({ messages: CONVERSATION, thinkingLevel: "high", model: null } as any);
 });
@@ -133,11 +141,11 @@ const opts = (over: Record<string, unknown> = {}) => ({
 describe("cloning the conversation", () => {
   it("carries the conversation's own messages, not a rendering of them", async () => {
     // The whole point: the copy reasons over what the main model can see.
-    const session = cloneSession(callsAgent());
+    cloneSession(callsAgent());
 
     await runMentionClone(opts());
 
-    expect(session.agent.state.messages).toEqual([
+    expect(appendMessage.mock.calls.map(([message]) => message)).toEqual([
       { role: "user", content: [{ type: "text", text: "hi" }] },
       { role: "assistant", content: [{ type: "text", text: "hello" }] },
     ]);
@@ -155,7 +163,18 @@ describe("cloning the conversation", () => {
     expect(buildSessionContext).toHaveBeenCalledWith([{ type: "message" }], "leaf-1");
     expect(createAgentSession.mock.calls[0][0].sessionManager).toEqual({
       kind: "in-memory-session-manager",
+      appendMessage,
     });
+  });
+
+  it("does not replay the parent's historical system prompt or tools", async () => {
+    buildSessionContext.mockReturnValue({ messages: [
+      { role: "system", content: "old prompt", toolsAdded: [{ name: "bash" }] },
+      ...CONVERSATION,
+    ] });
+    cloneSession(callsAgent());
+    await runMentionClone(opts());
+    expect(appendMessage.mock.calls.map(([message]) => message)).toEqual(CONVERSATION);
   });
 
   it("thinks at the level the session is really on", async () => {
@@ -171,7 +190,6 @@ describe("cloning the conversation", () => {
     // thinking_level_change entry, so a session where nobody ran /think reports
     // "off". Passing that would silently think less than the user asked for;
     // omitting it lets createAgentSession resolve the real level from settings.
-    // Also the Pi <0.82.0 path, where ctx has no thinkingLevel at all.
     buildSessionContext.mockReturnValue({ messages: CONVERSATION, thinkingLevel: "off", model: null } as any);
     const o = opts({ ctx: mainCtx({ thinkingLevel: undefined }) });
     cloneSession(callsAgent());
@@ -193,17 +211,17 @@ describe("cloning the conversation", () => {
 
     expect(result).toEqual({ spawned: true });
     expect(session.agent.state.messages).toEqual([]);
-    expect(session.agent.state.systemPrompt).toBe("the live system prompt");
+    expect(loaderOptions.mock.calls[0][0].systemPromptOverride()).toBe("the live system prompt");
   });
 
   it("carries the live system prompt rather than the one it rebuilt", async () => {
     // createAgentSession derives a prompt from cwd and agentDir. Close, but not
     // what the user's model is working under — extensions add to it per turn.
-    const session = cloneSession(callsAgent());
+    cloneSession(callsAgent());
 
     await runMentionClone(opts());
 
-    expect(session.agent.state.systemPrompt).toBe("the live system prompt");
+    expect(loaderOptions.mock.calls[0][0].systemPromptOverride()).toBe("the live system prompt");
   });
 
   it("inherits the parent's model, thinking level and providers", async () => {
@@ -270,7 +288,7 @@ describe("attributing the spawn to the real session", () => {
     await runMentionClone(o);
 
     expect(tool.execute).toHaveBeenCalledTimes(1);
-    expect(tool.execute.mock.calls[0][4]).toBe(o.ctx);
+    expect(tool.execute.mock.calls[0][4]).toMatchObject(o.ctx);
   });
 
   it("passes no tool-call id, since the real session issued none", async () => {

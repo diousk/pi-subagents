@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-30
+
+> **Breaking: requires Pi 0.99.1 or newer.** Update Pi before installing this version. Legacy transcript and session API compatibility paths have been removed.
+
+### Added
+- **Custom agents accept `service_tier: fast`.** OpenAI Responses and Codex requests forward the configured tier, and `priority` remains accepted.
+
+### Changed
+- **The minimum supported Pi version is 0.99.1.** Development dependencies and blocking CI target that minimum. Scripted model fixtures use transcript replay and physical model lookup.
+
+### Fixed
+- **Mention clones preserve conversation history on Pi 0.99.1.** History is seeded through the session manager, and the live prompt is supplied through the resource loader. Historical system messages do not grant the clone the parent's tools.
+- **Subagent tool scope covers nested execution.** A bound `tool_call` guard blocks out-of-scope deferred/codemode calls, while tool narrowing preserves exposure. Synthetic extension paths match their logical names.
+- **Output transcripts preserve system messages.** System/tool-state changes receive a `system` entry type, and a leading system message no longer causes the initial user prompt to be duplicated.
+
 ## [0.20.0] - 2026-09-09
 
 > **Breaking — the npm package is now `@diousk/pi-subagents-fast`.** Existing installs of `@tintinweb/pi-subagents` are not automatically migrated; install this fork with `pi install npm:@diousk/pi-subagents-fast`.

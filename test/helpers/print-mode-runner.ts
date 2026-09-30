@@ -47,7 +47,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   type AssistantMessage,
-  type Context,
   type FauxContentBlock,
   type FauxResponseStep,
   fauxAssistantMessage,
@@ -55,6 +54,7 @@ import {
   fauxToolCall,
   type Model,
   type ToolCall,
+  type TranscriptContext,
 } from "@earendil-works/pi-ai";
 import {
   type AgentSession,
@@ -62,11 +62,12 @@ import {
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
+  type ModelRuntime,
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { fauxModelBackend } from "./faux-model-backend.js";
-import { getModel, registerFauxProvider } from "./pi-ai.js";
+import { currentTools, getModel, registerFauxProvider } from "./pi-ai.js";
 
 /** Path to the pi-subagents extension entrypoint (repo `src/index.ts`). */
 const EXTENSION_PATH = fileURLToPath(new URL("../../src/index.ts", import.meta.url));
@@ -85,11 +86,11 @@ export type FauxReply = string | FauxContentBlock | FauxContentBlock[] | Assista
 
 /**
  * A context-branching responder. Invoked once per model call (parent OR child)
- * with that call's own `Context`, so it can decide what to emit from the prompt
+ * with that call's own `TranscriptContext`, so it can decide what to emit from the prompt
  * it sees — order-independent, unlike a flat FIFO `steps` list.
  */
 export type FauxResponder = (
-  context: Context,
+  context: TranscriptContext,
   state: { callCount: number },
 ) => FauxReply | Promise<FauxReply>;
 
@@ -189,10 +190,10 @@ export function agentCall(
 }
 
 function resolveReply(
-  reply: FauxReply | ((ctx: Context) => FauxReply),
-  ctx: Context,
+  reply: FauxReply | ((ctx: TranscriptContext) => FauxReply),
+  ctx: TranscriptContext,
 ): FauxReply {
-  return typeof reply === "function" ? (reply as (c: Context) => FauxReply)(ctx) : reply;
+  return typeof reply === "function" ? (reply as (c: TranscriptContext) => FauxReply)(ctx) : reply;
 }
 
 /**
@@ -205,12 +206,12 @@ function resolveReply(
  * Each route may be a value or a `(ctx) => value` function.
  */
 export function routeBySession(routes: {
-  parentInitial: FauxReply | ((ctx: Context) => FauxReply);
-  parentFinal?: FauxReply | ((ctx: Context) => FauxReply);
-  subagent: FauxReply | ((ctx: Context) => FauxReply);
+  parentInitial: FauxReply | ((ctx: TranscriptContext) => FauxReply);
+  parentFinal?: FauxReply | ((ctx: TranscriptContext) => FauxReply);
+  subagent: FauxReply | ((ctx: TranscriptContext) => FauxReply);
 }): FauxResponder {
   return (context) => {
-    const isParent = (context.tools ?? []).some((t) => t.name === "Agent");
+    const isParent = currentTools(context).some((t) => t.name === "Agent");
     if (!isParent) return resolveReply(routes.subagent, context);
     const spawned = context.messages.some(
       (m) => m.role === "toolResult" && (m as { toolName?: string }).toolName === "Agent",
@@ -278,8 +279,7 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
   // --- model backend ---
   let faux: ReturnType<typeof registerFauxProvider> | undefined;
   let model: Model<string> | undefined;
-  let modelRegistry: unknown;
-  let modelRuntime: unknown;
+  let modelRuntime: ModelRuntime | undefined;
   if (live) {
     // Explicit pin wins (options.live or PI_PROVIDER + PI_MODEL). Otherwise leave
     // `model` undefined: createAgentSession then calls findInitialModel() against
@@ -303,7 +303,6 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
       }
     }
     // Let createAgentSession build the real, auth-backed registry/runtime.
-    modelRegistry = undefined;
     modelRuntime = undefined;
   } else {
     if (!options.steps && !options.respond) {
@@ -314,7 +313,7 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
     // Structural faux registry + runtime (see faux-model-backend.ts): the parent
     // session uses `model` directly; subagents inherit it via ctx.model since
     // resolveDefaultModel falls back to the parent model when no model is pinned.
-    ({ modelRegistry, modelRuntime } = fauxModelBackend(model));
+    ({ modelRuntime } = fauxModelBackend(model));
 
     // Pad the response queue: one context-branching responder per expected model
     // call. The queue is a single FIFO shared by parent + child, but every entry
@@ -357,9 +356,8 @@ export async function runPrintMode(options: RunPrintModeOptions): Promise<PrintM
     cwd,
     agentDir,
     model,
-    // Structural faux registry/runtime in faux mode; undefined in live mode (defaults).
-    modelRegistry: modelRegistry as any,
-    modelRuntime: modelRuntime as any,
+    // Structural faux runtime in faux mode; undefined in live mode (defaults).
+    modelRuntime,
     resourceLoader: loader,
     sessionManager: SessionManager.inMemory(cwd),
     // Live: real settings so an omitted model resolves to your local default

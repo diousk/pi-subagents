@@ -25,6 +25,7 @@ import { fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { encodeCwd } from "../../src/output-file.js";
 import { readJournal } from "../../src/workflow/journal.js";
+import { currentSystemPrompt, currentTools } from "../helpers/pi-ai.js";
 import { runPrintMode, toolCallsNamed, toolResultsNamed } from "../helpers/print-mode-runner.js";
 
 /**
@@ -102,10 +103,10 @@ describe("Workflow end to end", () => {
       maxModelCalls: 32,
       live: false, // scripted on purpose: a real model would not emit the tool call
       respond: context => {
-        const isParent = (context.tools ?? []).some(t => t.name === "SubagentWorkflow");
+        const isParent = currentTools(context).some(t => t.name === "SubagentWorkflow");
         if (!isParent) {
           childPrompts.push(asText(context));
-          childSystemPrompts.push(context.systemPrompt ?? "");
+          childSystemPrompts.push(currentSystemPrompt(context));
           return fauxText("SUBAGENT-DONE");
         }
         return asText(context).includes("Task ID")
@@ -186,13 +187,13 @@ describe("Workflow end to end", () => {
       maxModelCalls: 32,
       live: false, // scripted on purpose: a real model would not emit the tool call
       respond: context => {
-        const isParent = (context.tools ?? []).some(t => t.name === "SubagentWorkflow");
+        const isParent = currentTools(context).some(t => t.name === "SubagentWorkflow");
         if (!isParent) {
           const seen = asText(context);
           childPrompts.push(seen);
           // Answer through the injected tool exactly once, then stop — a model
           // that kept calling it every turn would just spin.
-          const alreadyAnswered = (context.tools ?? []).length > 0 && /Recorded\./.test(seen);
+          const alreadyAnswered = currentTools(context).length > 0 && /Recorded\./.test(seen);
           return alreadyAnswered
             ? fauxText("done")
             : fauxToolCall("StructuredOutput", { files: ["a.ts", "b.ts"] }, { id: "so-1" });
@@ -234,7 +235,7 @@ describe("Workflow end to end", () => {
       maxModelCalls: 12,
       live: false, // scripted on purpose: a real model would not emit the tool call
       respond: context => {
-        const isParent = (context.tools ?? []).some(t => t.name === "SubagentWorkflow");
+        const isParent = currentTools(context).some(t => t.name === "SubagentWorkflow");
         if (!isParent) {
           childPrompts.push(asText(context));
           return fauxText("SUBAGENT-DONE");

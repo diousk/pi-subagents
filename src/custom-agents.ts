@@ -297,7 +297,7 @@ function parseMemory(val: unknown): MemoryScope | undefined {
 
 /** Parse the OpenAI Responses/Codex `service_tier` frontmatter field. */
 function parseServiceTier(val: unknown): ServiceTier | undefined {
-  if (val === "auto" || val === "default" || val === "flex" || val === "priority" || val === "scale") {
+  if (val === "auto" || val === "default" || val === "flex" || val === "fast" || val === "priority" || val === "scale") {
     return val;
   }
   return undefined;
