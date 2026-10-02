@@ -3,9 +3,10 @@
  */
 
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 import { BUILTIN_TOOL_NAMES } from "./agent-types.js";
+import { loadRoutingSettings } from "./settings.js";
 import type { AgentConfig, IsolationMode, MemoryScope, ServiceTier, ThinkingLevel } from "./types.js";
 
 /**
@@ -47,9 +48,10 @@ export function loadCustomAgents(cwd: string, strict = false): Map<string, Agent
   const projectDir = join(cwd, ".pi", "agents");
 
   const agents = new Map<string, AgentConfig>();
-  loadFromDir(globalDir, agents, "global", strict);            // lowest priority
-  loadFromDir(workspaceProjectDir, agents, "project", strict); // shared workspace
-  loadFromDir(projectDir, agents, "project", strict);          // highest priority (overwrites)
+  const excluded = loadRoutingSettings(cwd).guidelineFile;
+  loadFromDir(globalDir, agents, "global", strict, excluded);
+  loadFromDir(workspaceProjectDir, agents, "project", strict, excluded);
+  loadFromDir(projectDir, agents, "project", strict, excluded);
 
   warnedLastLoad = warnedThisLoad;
   warnedThisLoad = new Set();
@@ -57,7 +59,7 @@ export function loadCustomAgents(cwd: string, strict = false): Map<string, Agent
 }
 
 /** Load agent configs from a directory into the map. */
-function loadFromDir(dir: string, agents: Map<string, AgentConfig>, source: "project" | "global", strict: boolean): void {
+function loadFromDir(dir: string, agents: Map<string, AgentConfig>, source: "project" | "global", strict: boolean, excluded?: string): void {
   if (!existsSync(dir)) return;
 
   let files: string[];
@@ -68,6 +70,7 @@ function loadFromDir(dir: string, agents: Map<string, AgentConfig>, source: "pro
   }
 
   for (const file of files) {
+    if (file.toLowerCase() === "custom-route.md" || resolve(dir, file) === excluded) continue;
     const filenameType = basename(file, ".md");
 
     const path = join(dir, file);

@@ -54,11 +54,11 @@ describe("settings persistence", () => {
     expect(loadSettings(projectDir)).toEqual({});
   });
 
-  it("returns {} when both files are malformed JSON", () => {
+  it("disables routing when both files are malformed JSON", () => {
     writeFileSync(globalFile(), "not json {{");
     mkdirSync(join(projectDir, ".pi"), { recursive: true });
     writeFileSync(projectFile(), "also not json");
-    expect(loadSettings(projectDir)).toEqual({});
+    expect(loadSettings(projectDir)).toEqual({ routingMode: "off", customGuideline: "", jev: false });
   });
 
   it("loads from global when no project file", () => {
@@ -441,14 +441,14 @@ describe("settings persistence", () => {
       expect(loadSettings(projectDir).toolDescriptionMode).toBeUndefined();
     });
 
-    it("returns {} when the JSON root is not an object (array, string, null)", () => {
+    it("suppresses inherited routing when the JSON root is not an object (array, string, null)", () => {
       mkdirSync(join(projectDir, ".pi"), { recursive: true });
       writeFileSync(projectFile(), '["not", "an", "object"]');
-      expect(loadSettings(projectDir)).toEqual({});
+      expect(loadSettings(projectDir)).toEqual({ routingMode: "off", customGuideline: "", jev: false });
       writeFileSync(projectFile(), '"just a string"');
-      expect(loadSettings(projectDir)).toEqual({});
+      expect(loadSettings(projectDir)).toEqual({ routingMode: "off", customGuideline: "", jev: false });
       writeFileSync(projectFile(), "null");
-      expect(loadSettings(projectDir)).toEqual({});
+      expect(loadSettings(projectDir)).toEqual({ routingMode: "off", customGuideline: "", jev: false });
     });
 
     it("keeps valid fields while dropping invalid siblings", () => {
@@ -508,7 +508,7 @@ describe("settings persistence", () => {
       mkdirSync(join(projectDir, ".pi"), { recursive: true });
       writeFileSync(projectFile(), "not valid json {{{");
       try {
-        expect(loadSettings(projectDir)).toEqual({});
+        expect(loadSettings(projectDir)).toEqual({ routingMode: "off", customGuideline: "", jev: false });
         expect(spy).toHaveBeenCalledTimes(1);
         expect(String(spy.mock.calls[0][0])).toMatch(/Ignoring malformed settings/);
       } finally {

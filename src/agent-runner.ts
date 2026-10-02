@@ -28,7 +28,7 @@ import { createNestedSubagentTools, getMaxSubagentDepth, type NestedAgentManager
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
 import { preloadSkills } from "./skill-loader.js";
 import { createStructuredCapture, createStructuredOutputTool, structuredRetryPrompt } from "./structured-output.js";
-import type { ServiceTier, SubagentType, ThinkingLevel } from "./types.js";
+import type { AgentConfig, ServiceTier, SubagentType, ThinkingLevel } from "./types.js";
 import type { LifetimeUsage } from "./usage.js";
 import type { CompiledSchema } from "./workflow/json-schema.js";
 
@@ -436,6 +436,8 @@ export interface ToolActivity {
 }
 
 export interface RunOptions {
+  /** Snapshot of the selected definition for this branch. */
+  agentConfig?: AgentConfig;
   /** ExtensionAPI instance — used for pi.exec() instead of execSync. */
   pi: ExtensionAPI;
   /** Manager-assigned id; suffixes session name to disambiguate parallel spawns (e.g. `Explore#a1b2c3d4`). */
@@ -654,8 +656,8 @@ export async function runAgent(
   prompt: string,
   options: RunOptions,
 ): Promise<RunResult> {
-  const config = getConfig(type);
-  const agentConfig = getAgentConfig(type);
+  const agentConfig = options.agentConfig ?? getAgentConfig(type);
+  const config = agentConfig ?? getConfig(type);
 
   // Resolve working directory: worktree override > parent cwd
   const effectiveCwd = options.cwd ?? ctx.cwd;
@@ -688,7 +690,7 @@ export async function runAgent(
     }
   }
 
-  let toolNames = getToolNamesForType(type);
+  let toolNames = options.agentConfig ? options.agentConfig.builtinToolNames ?? [...BUILTIN_TOOL_NAMES] : getToolNamesForType(type);
 
   // Persistent memory: detect write capability and branch accordingly.
   // Account for disallowedTools — a tool in the base set but on the denylist is not truly available.

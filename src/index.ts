@@ -29,12 +29,13 @@ import { isolationParam, resolveAgentInvocationConfig, resolveJoinMode } from ".
 import { describeMention, handleBase, isReservedHandle, parseMention, resolveHandleToType, stripAgentPrefix } from "./mention.js";
 import { runMentionClone } from "./mention-clone.js";
 import { describeModel, type ModelRegistry, resolveModel } from "./model-resolver.js";
+import { loadRoutingPolicy, routingGuidance } from "./model-routing.js";
 import { checkModelScope, isScopeModelsEnabled, setScopeModelsEnabled } from "./model-scope.js";
 import { getMaxSubagentDepth, setMaxSubagentDepth } from "./nested-tools.js";
 import { createOutputFilePath, ensureOutputFile, getOutputTranscriptDefault, sessionTaskDir, setOutputTranscriptDefault, streamToOutputFile, writeInitialEntry } from "./output-file.js";
 import { SubagentScheduler } from "./schedule.js";
 import { resolveStorePath, ScheduleStore } from "./schedule-store.js";
-import { applyAndEmitLoaded, loadSettings, type SubagentsSettings, saveAndEmitChanged, type ToolDescriptionMode } from "./settings.js";
+import { applyAndEmitLoaded, loadSettings, projectRoutingSettings, type SubagentsSettings, saveAndEmitChanged, type ToolDescriptionMode } from "./settings.js";
 import { getForegroundOutcomeNote, getStatusNote, partialOutputSuffix } from "./status-note.js";
 import { type AgentConfig, type AgentInvocation, type AgentMentionMode, type AgentRecord, type JoinMode, type NotificationDetails, type SubagentType, type ViewerMarkdownMode, type WidgetMode } from "./types.js";
 import { createMentionProvider, mentionRoster, type TypeInfo } from "./ui/agent-mention.js";
@@ -57,6 +58,7 @@ import {
   type UICtx,
 } from "./ui/agent-widget.js";
 import { FleetList, type FleetUICtx, type FleetWorkflow } from "./ui/fleet-list.js";
+import { showRoutingMenu } from "./ui/model-routing-menu.js";
 import { showSchedulesMenu } from "./ui/schedule-menu.js";
 import { selectItem } from "./ui/select-item.js";
 import { renderWorkflowCard, renderWorkflowEntryCard } from "./ui/workflow-card.js";
@@ -396,6 +398,7 @@ export default function (pi: ExtensionAPI) {
   const reloadCustomAgents = (strict = false) => {
     const userAgents = loadCustomAgents(process.cwd(), strict);
     registerAgents(userAgents);
+    return userAgents;
   };
 
   // Initial load — the only strict one. A bad edit mid-session must not kill the
@@ -561,6 +564,8 @@ export default function (pi: ExtensionAPI) {
       durationMs,
       tokens,
       usage,
+      routing: record.routing,
+      routingUsage: record.routingUsage,
     };
   }
 
@@ -586,6 +591,7 @@ export default function (pi: ExtensionAPI) {
       id: record.id, type: record.type, description: record.description,
       status: record.status, result: record.result, error: record.error,
       startedAt: record.startedAt, completedAt: record.completedAt,
+      routing: record.routing, routingUsage: record.routingUsage,
     });
 
     // Skip notification if result was already consumed via get_subagent_result
@@ -697,6 +703,8 @@ export default function (pi: ExtensionAPI) {
 
   const spawnTopLevel = (piRef: any, ctxRef: any, type: string, prompt: string, options: any) => {
     const safeOptions = { ...(options ?? {}) };
+    delete safeOptions.routing;
+    delete safeOptions.agentConfig;
     delete safeOptions.parentAgentId;
     // Internal too: a forged value would hide an RPC-spawned agent inside
     // someone else's workflow, and take it out of the concurrency pool with it.
@@ -1364,6 +1372,16 @@ export default function (pi: ExtensionAPI) {
     widget.onTurnStart();
   });
 
+  pi.on("before_agent_start", (event, ctx) => {
+    const guidance = routingGuidance(loadRoutingPolicy(ctx.cwd));
+    const description = agentToolDescription + (guidance ? "\n\n" + guidance : "");
+    if (agentTool.description !== description) {
+      agentTool.description = description;
+      pi.registerTool(agentTool);
+    }
+    if (guidance) return { systemPrompt: event.systemPrompt + "\n\n" + guidance };
+  });
+
   /** Build the full type list text dynamically from available agents only. */
   const buildTypeListText = () => {
     const available = getAvailableTypes();
@@ -1578,10 +1596,11 @@ Terse command-style prompts produce shallow, generic work.
   // Held rather than registered inline: the mention clone reuses this exact
   // definition, so the agent it starts is an ordinary top-level spawn instead
   // of a second implementation that has to be kept in step with this one.
+  const initialRoutingGuidance = routingGuidance(loadRoutingPolicy(process.cwd()));
   const agentTool = defineTool({
     name: SUBAGENT_TOOL_NAMES.AGENT,
     label: "Agent",
-    description: agentToolDescription,
+    description: agentToolDescription + (initialRoutingGuidance ? "\n\n" + initialRoutingGuidance : ""),
     promptSnippet: "Launch autonomous sub-agents for complex multi-step tasks",
     promptGuidelines: [
       "Use Agent with specialized agents when the task matches an agent type's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing — if you delegate research to a subagent, do not also perform the same searches yourself.",
@@ -1769,7 +1788,8 @@ Terse command-style prompts produce shallow, generic work.
       widget.setUICtx(ctx.ui as UICtx);
 
       // Reload custom agents so new project/global .md files are picked up without restart
-      reloadCustomAgents();
+      const userAgents = reloadCustomAgents();
+      const routingPolicy = loadRoutingPolicy(ctx.cwd, userAgents);
 
       const rawType = params.subagent_type as SubagentType;
       // Single decision point for dispatch (#183): unknown, disabled and
@@ -1916,6 +1936,10 @@ Terse command-style prompts produce shallow, generic work.
         const { modelName: recModelName, tags } = buildInvocationTags(rec.invocation);
         const recModeLabel = getPromptModeLabel(type);
         const recTags = recModeLabel ? [recModeLabel, ...tags] : tags;
+        if (rec.routing?.source === "jev" && (rec.routingUsage || rec.routing.unpriced !== undefined)) {
+          recTags.push(rec.routing.mode === "shadow" ? "Jev shadow" : "Jev");
+          if (rec.routing.unpriced) recTags.push("Jev price unavailable");
+        }
         return {
           displayName: getDisplayName(type),
           description: rec.description,
@@ -1952,7 +1976,7 @@ Terse command-style prompts produce shallow, generic work.
             subagent_type: requestedType,
             prompt: params.prompt as string,
             model: params.model as string | undefined,
-            thinking: thinking,
+            thinking: params.thinking as typeof thinking,
             max_turns: effectiveMaxTurns,
             isolated: isolated,
             isolation: isolation,
@@ -2057,6 +2081,8 @@ Terse command-style prompts produce shallow, generic work.
           description: params.description,
           name: params.name as string | undefined,
           model,
+          agentConfig: customConfig,
+          routing: { policy: routingPolicy, modelExplicit: !!resolvedConfig.modelInput, thinkingExplicit: thinking !== undefined, entrypoint: "agent" },
           maxTurns: effectiveMaxTurns,
           isolated,
           inheritContext,
@@ -2211,6 +2237,8 @@ Terse command-style prompts produce shallow, generic work.
           description: params.description,
           name: params.name as string | undefined,
           model,
+          agentConfig: customConfig,
+          routing: { policy: routingPolicy, modelExplicit: !!resolvedConfig.modelInput, thinkingExplicit: thinking !== undefined, entrypoint: "agent" },
           maxTurns: effectiveMaxTurns,
           isolated,
           inheritContext,
@@ -2933,6 +2961,7 @@ Terse command-style prompts produce shallow, generic work.
     // Actions
     options.push("Create new agent");
     options.push("Settings");
+    options.push("Model routing");
 
     const noAgentsMsg = allNames.length === 0 && agents.length === 0
       ? "No agents found. Create specialized subagents that can be delegated to.\n\n" +
@@ -2963,6 +2992,14 @@ Terse command-style prompts produce shallow, generic work.
       await showCreateWizard(ctx);
     } else if (choice === "Settings") {
       await showSettings(ctx);
+      await showAgentsMenu(ctx);
+    } else if (choice === "Model routing") {
+      const patch = await showRoutingMenu(ctx);
+      if (patch) {
+        const toast = saveAndEmitChanged({ ...snapshotSettings(), ...patch }, "Model routing settings updated", (event, payload) => pi.events.emit(event, payload), ctx.cwd);
+        ctx.ui.notify(toast.message, toast.level);
+        reloadCustomAgents();
+      }
       await showAgentsMenu(ctx);
     }
   }
@@ -3331,6 +3368,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
 
     const { record } = await manager.spawnAndWait(pi, ctx, "general-purpose", generatePrompt, {
       description: `Generate ${name} agent`,
+      routing: { modelExplicit: false, thinkingExplicit: false, entrypoint: "internal" },
       maxTurns: 5,
       // Exempt from maxConcurrentForeground. This runs from a modal wizard, not
       // a tool call: it passes no signal, and Esc in `ctx.ui` never reaches the
@@ -3440,6 +3478,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
    */
   function snapshotSettings() {
     return {
+      ...projectRoutingSettings(process.cwd()),
       maxConcurrent: manager.getMaxConcurrent(),
       // 0 = unlimited, and the default — see SubagentsSettings.
       maxConcurrentForeground: manager.getMaxConcurrentForeground(),

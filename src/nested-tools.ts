@@ -18,6 +18,7 @@ import {
 import { loadCustomAgents } from "./custom-agents.js";
 import { isolationParam, resolveAgentInvocationConfig } from "./invocation-config.js";
 import { resolveModel } from "./model-resolver.js";
+import { loadRoutingPolicy, type RoutingInput, routingGuidance } from "./model-routing.js";
 import { checkModelScope } from "./model-scope.js";
 import {
   createOutputFilePath,
@@ -50,6 +51,8 @@ export function setMaxSubagentDepth(n: number): void { maxSubagentDepth = Math.m
 const NESTED_TOOL_NAMES = ["Agent", "get_subagent_result", "steer_subagent"] as const;
 
 interface NestedSpawnOptions {
+  routing?: RoutingInput;
+  agentConfig?: AgentConfig;
   description: string;
   model?: Model<any>;
   maxTurns?: number;
@@ -162,7 +165,7 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
     label: "Agent",
     description:
       "Launch a child-safe nested subagent for bounded delegated work. " +
-      "Only use agent types allowed by this parent agent; nesting is depth-limited.",
+      "Only use agent types allowed by this parent agent; nesting is depth-limited.\n" + routingGuidance(loadRoutingPolicy(context.configCwd)),
     parameters: Type.Object({
       prompt: Type.String({ description: "Self-contained task for the nested agent." }),
       description: Type.String({ description: "Short 3-5 word task description." }),
@@ -256,6 +259,8 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       const rootSessionId = context.manager.getRecord(context.parentAgentId)?.rootSessionId;
       const childDepth = context.depth + 1;
       const options: NestedSpawnOptions = {
+        routing: { policy: loadRoutingPolicy(context.configCwd, registry), modelExplicit: !!invocation.modelInput, thinkingExplicit: invocation.thinking !== undefined, entrypoint: "nested" },
+        agentConfig: config,
         description: params.description,
         model,
         maxTurns: invocation.maxTurns,

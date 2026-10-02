@@ -308,6 +308,10 @@ A run's concurrency limit is its own, independent of the session's `maxConcurren
 
 ### Settings and the CLI flag
 
+Workflow children follow [Model routing](../README.md#model-routing). With `routingMode: "auto"` (default), custom agents come first, then a main-agent Markdown guideline, then optional Jev, then the existing model. The main agent receives the guideline before writing the script and can express its choice through `agent(prompt, { model, effort })`. Either explicit option skips Jev under `auto`; workflow options retain their precedence over agent-file defaults. Under `jev`, Jev chooses first and those defaults remain the fallback on uncertainty, missing credentials or errors. Under `shadow`, Jev records a suggestion without changing the model; under `off`, routing guidance and Jev are disabled. An inherited parent model is eligible for Jev. Resuming a child does not classify again in any mode.
+
+Jev classification happens once at child startup through Pi's native API, with a separate concurrency limit of four. Uncertainty, errors or a two-second timeout keep the existing model; stopping the workflow cancels classification without launching another child. Classifier tokens do not affect `budget.spent()` or coding context. Reported classifier cost rolls into child/ancestor cost totals once; classifier usage and the routing decision remain separately available on the agent record. Catalog-zero classifier prices mean unavailable pricing.
+
 `workflowsEnabled` is **on**; leaving it unset means *auto*, which is on unless another extension already offers a `Workflow` or `SubagentWorkflow` tool, in which case this one stands down for the session. Setting it explicitly pins it. See [Persistent settings](../README.md#persistent-settings).
 
 `pi --subagents-workflow-file=<path>` runs a workflow at startup, including headless under `pi -p`. Use the `=` form — the bare `--flag value` spelling swallows the next argument. See [CLI flags](../README.md#cli-flags).

@@ -2,8 +2,9 @@
  * types.ts — Type definitions for the subagent system.
  */
 
-import type { ThinkingLevel } from "@earendil-works/pi-ai";
+import type { ThinkingLevel, Usage } from "@earendil-works/pi-ai";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
+import type { RoutingDecision } from "./model-routing.js";
 import type { LifetimeUsage } from "./usage.js";
 
 export type { ThinkingLevel };
@@ -159,6 +160,10 @@ export type MentionResolution =
   | { kind: "tombstone"; entry: AgentTombstone };
 
 export interface AgentRecord {
+  /** Credential-free startup decision, separate from effective session metadata. */
+  routing?: RoutingDecision;
+  /** Classifier spend; excluded from coding-context token counters. */
+  routingUsage?: Usage;
   id: string;
   type: SubagentType;
   /**

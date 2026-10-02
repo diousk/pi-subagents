@@ -28,6 +28,7 @@ https://github.com/user-attachments/assets/8685261b-9338-4fea-8dfe-1c590d5df543
 - **Graceful turn limits** — agents get a "wrap up" warning before hard abort, producing clean partial results instead of cut-off output
 - **Case-insensitive agent types** — `"explore"`, `"Explore"`, `"EXPLORE"` all work. A type that doesn't resolve to exactly one *enabled* agent — unknown, disabled, or ambiguous between two agents differing only by case — falls back to general-purpose with a note, or is refused outright under [`fallbackSubagent: none`](#persistent-settings)
 - **Fuzzy model selection** — specify models by name (`"haiku"`, `"sonnet"`) instead of full IDs, with automatic filtering to only available/configured models
+- **Model routing** — custom agents first, then a user-supplied Markdown guideline, then optional Jev model selection. Configure it through `/agents → Model routing` or two ordinary JSON fields; see [Model routing](#model-routing)
 - **Context inheritance** — optionally fork the parent conversation into a sub-agent so it knows what's been discussed
 - **Persistent agent memory** — three scopes (project, local, user) with automatic read-only fallback for agents without write tools
 - **Git worktree isolation** — run agents in isolated repo copies; changes auto-committed to branches on completion
@@ -76,9 +77,9 @@ npm pack --dry-run
 
 The `prepublishOnly` script runs lint, typecheck, tests, and the build before npm uploads the package. After publishing, install it with `pi install npm:@diousk/pi-subagents-fast`.
 
-Requires **Pi 0.99.1 or newer** and **Node.js 22.19.0 or newer**. Update Pi before installing this extension. The `peerDependencies` range declares the minimum, so npm flags an older Pi at install time.
+Requires **Pi 1.0.0 or newer** and **Node.js 22.19.0 or newer**. Update Pi before installing this extension. The `peerDependencies` range declares the minimum, so npm flags an older Pi at install time.
 
-The development and CI baseline is **Pi 0.99.1**. Use that version or newer for `openai/gpt-6.1-sol` (API key) or `openai-codex/gpt-6.1-sol` (your Pi Codex login). Child sessions reuse the parent's configured providers and authentication; model limits and pricing come from Pi's provider catalog. See the [Pi 0.99.1 release](https://pi.dev/changelog/releases/0.99.1).
+Development and CI use **Pi 1.0.0**. Jev uses Pi's native classifier API. Child sessions reuse the parent's configured providers and authentication; model availability, limits and pricing come from Pi's catalog.
 
 ### Other hosts
 
@@ -354,7 +355,9 @@ All fields are optional — sensible defaults for everything.
 
 For an OpenAI Responses or Codex agent, set `service_tier: fast` to request fast processing; `priority` remains a supported alias. Availability depends on the provider and account. The UI shows the requested tier only when the effective model uses one of those APIs. See [OpenAI fast mode](https://developers.openai.com/api/docs/guides/fast-mode).
 
-GPT-6.1 Sol supports `low`, `medium`, `high`, `xhigh`, and `max` reasoning. In Pi 0.99.1, `minimal` maps to provider effort `low`; `off` is clamped to that same alias because Sol cannot disable reasoning. The UI reports Pi's logical thinking level. Prefer explicit supported levels in agent files:
+The extension forwards both tiers for `gpt-6.1-sol` and `gpt-6-luna` through Pi's OpenAI Responses and Codex transports. Pi 1.0.0's Codex adapter currently estimates a response marked `fast` at the standard rate; forwarding the tier works, but its displayed cost can be understated. This extension reports Pi's cost estimate without recalculating it. OpenAI documents Fast mode as unavailable for these models with EU data residency.
+
+GPT-6.1 Sol supports `low`, `medium`, `high`, `xhigh`, and `max` reasoning. In Pi 1.0.0, `minimal` maps to provider effort `low`; `off` is clamped to that same alias because Sol cannot disable reasoning. The UI reports Pi's logical thinking level. Prefer explicit supported levels in agent files:
 
 ```yaml
 model: openai-codex/gpt-6.1-sol
@@ -629,6 +632,72 @@ When background agents complete, they notify the main agent. The **join mode** c
 **Configuration:**
 - Configure join mode in `/agents` → Settings → Join mode
 
+## Model routing
+
+Open `/agents → Model routing` to choose a mode and configure a guideline path, models with descriptions, or a masked TypeSafe API key. The menu shows the active mode and source and saves project settings. For machine-wide defaults, edit `~/.pi/agent/subagents.json`; project overrides go in `.pi/subagents.json`. `PI_CODING_AGENT_DIR` changes the global directory along with Pi's other configuration.
+
+Set one top-level field to control routing; omitting it means `auto`:
+
+```json
+{ "routingMode": "auto" }
+```
+
+| `routingMode` | Behavior |
+|---|---|
+| `auto` (default) | Use the priority table below |
+| `shadow` | Ask Jev and record its suggestion, but keep the model chosen from agent definitions, the guideline or the existing model. Jev requests can incur charges |
+| `jev` | Jev chooses first for every fresh task, even with custom agents, a guideline, explicit model parameters or agent-file model pins. Invalid configuration, unavailable credentials, low confidence or errors keep the default-priority choice |
+| `off` | No custom-agent routing selection guidance, guideline injection or Jev requests. Agents remain callable and existing model/thinking settings still apply |
+
+Mode changes apply to subsequent fresh launches. The main agent's routing guidance and tool description refresh before its next turn, so switching to `off` removes previously injected routing instructions.
+
+The default priority is:
+
+| Priority | Configuration | Who chooses |
+|---|---|---|
+| 1 | At least one enabled custom agent | The main agent chooses an agent from its description. Guideline and Jev are inactive, even if it chooses a built-in agent |
+| 2 | `customGuideline` points to a Markdown file | The main agent reads the guideline and passes its model/thinking choice explicitly |
+| 3 | `jev` is configured | Jev chooses a model from your descriptions for a fresh delegated task |
+| 4 | None of the above | The existing model is used |
+
+**Custom agents:** keep using `~/.pi/agent/agents/<name>.md`, `.pi/agents/<name>.md` or `.agents/agents/<name>.md`. No routing setting is needed. Built-in and disabled agents do not activate priority 1. Agent-file model/thinking pins supply the default choice over `Agent` parameters; a confident Jev choice in `jev` mode can replace the model.
+
+**Custom guideline:** write your routing rules in `~/.pi/agent/agents/custom-route.md`, then configure:
+
+```json
+{
+  "customGuideline": "~/.pi/agent/agents/custom-route.md"
+}
+```
+
+For example, the Markdown can say “Use anthropic/claude-haiku-4-5 for simple edits; use openai-codex/gpt-6.1-sol for debugging concurrency.” The guideline reaches the main agent in full, compact and custom description modes, and is refreshed before each turn, except in `off` mode. Relative paths are resolved from the settings file's directory: `agents/custom-route.md` in `.pi/subagents.json` means `.pi/agents/custom-route.md`. `custom-route.md` and the configured guideline file are excluded from agent discovery. Merely placing a guideline file in the directory does not enable it. A configured missing, empty or oversized guideline produces a diagnostic and keeps the existing model under `auto`; it does not prevent Jev requests under `jev` or `shadow`.
+
+**Jev:** provide descriptions and exact model IDs available through your Pi login:
+
+```json
+{
+  "jev": {
+    "TYPESAFE_API_KEY": "your-typesafe-key",
+    "models": [
+      { "model": "anthropic/claude-haiku-4-5", "description": "Simple edits, lookup and concise summaries" },
+      { "model": "openai-codex/gpt-6.1-sol", "description": "Complex debugging, architecture and concurrency" }
+    ]
+  }
+}
+```
+
+`TYPESAFE_API_KEY` is optional when Pi already has TypeSafe credentials or the environment variable is set. A literal key must be a nonempty token without whitespace or control characters and applies only to that classifier request; it is saved in the settings file, masked in the menu and omitted from settings events, prompts and routing records. Without a literal key, Pi's native credential availability check runs before classification. Rejected credentials fall back without retrying. The extension does not change environment variables or register a routing provider. `models` accepts 1–254 unique entries with descriptions of 1–4000 characters. Jev entries use exact `provider/model-id` spelling; fuzzy names remain available for explicit `Agent` parameters.
+
+Under `auto`, supplying **either** `model` or `thinking` explicitly skips Jev. An agent-file pin also skips it. In workflows, either `model` or `effort` skips it, and workflow options retain their precedence over agent-file defaults. Inherited models remain eligible for Jev. Under `jev`, these choices supply the fallback model, but do not skip classification. Under `shadow`, they remain the actual choice while Jev records a comparison. Jev changes only the model; Pi still determines the effective thinking level.
+
+Automatic choices are limited to authenticated models and the current nonempty Pi model scope, regardless of the `scopeModels` setting. When `scopeModels` is enabled, Jev candidates also respect `enabledModels`. Unavailable candidates are excluded and the selected model is checked again after classification, including any changed scope. Jev failure, confidence below 0.6 or a two-second timeout keeps the default-priority model already selected by the main agent, explicit caller or agent definition, otherwise the existing model. This fallback does not make a second Jev request. Cancellation stops startup without launching a fallback. Queued agents read the current mode and classify after dequeue; nested calls share a separate classifier concurrency limit of four and do not take another agent slot.
+
+Jev applies to fresh tool, nested, workflow, scheduled, RPC and direct-mention spawns. Schedules read current configuration when they fire. Direct calls, schedules and RPC do not create an extra main-agent turn to interpret a custom guideline: with priorities 1 or 2 under `auto`, or when Jev falls back under `jev`, they use an explicit choice, agent definition or the existing model. Resumes and internal agent-file generation do not call Jev in any mode.
+
+Project `routingMode` and `customGuideline` replace the global values; omission inherits them, and `customGuideline: false` disables the guideline. A project `jev` block replaces the **whole** global block, including credentials; omitted fields inside that block do not inherit. `"jev": false` disables global Jev. An invalid mode or malformed settings file disables routing. An invalid explicit Jev block disables that block instead of restoring global paid routing. Other settings changes preserve these inheritance rules.
+
+Classifier usage is recorded separately as `routingUsage`, including in `shadow`; it does not consume coding context or workflow output budgets. Its reported cost is added once to the agent and ancestor cost totals, and `reportUsage` can return its token usage to the parent. `routing` records the mode, source, reason, applied `model` and confidence; shadow records `suggestedModel` and leaves `model` unset. `fallbackSource` identifies the default source when a suggestion is observed or Jev falls back. Shadow results show “Jev shadow”. Zero catalog prices are marked `unpriced`; the Agent result shows “Jev price unavailable” instead of treating that as proof the classifier is free.
+
 ## Model Scope
 
 **Opt-in:** off by default. Enable via `/agents → Settings → Scope models`.
@@ -641,6 +710,7 @@ When on, each subagent spawn's effective model is validated against pi's own `en
 |---|---|
 | Caller-supplied via `Agent({ model: "..." })` | Hard error returned to the orchestrator, listing allowed models |
 | Caller-supplied via cross-extension RPC (`subagents:rpc:spawn`, e.g. pi-tasks `TaskExecute`) | Hard error returned to the calling extension, listing allowed models |
+| Jev-selected | Excluded from candidates; a scope change during classification keeps the default-priority model |
 | Pinned in agent frontmatter | Warning toast + the pinned model runs (frontmatter is authoritative) |
 | Parent-inherited (neither set) | Warning toast + parent's model runs |
 
@@ -660,6 +730,8 @@ Runtime tuning values set via `/agents` → Settings (max concurrency, max foreg
 - **Project:** `<cwd>/.pi/subagents.json` — per-project overrides. Written by `/agents` → Settings.
 
 **Precedence:** project overrides global on any field present in both. Missing fields fall back to the hardcoded defaults (max concurrency `10`, max foreground concurrency `0` = unlimited, default max turns unlimited, grace turns `5`, nested depth `2`, join mode `smart`, defaults enabled).
+
+Routing settings: `routingMode` (`auto | shadow | jev | off`, default `auto`), `customGuideline` (`string | false`, default unset) and `jev` (`{ TYPESAFE_API_KEY?: string, models: { model, description }[] } | false`, default unset). See [Model routing](#model-routing) for examples and the whole-block override rule.
 
 **Nested depth** (`maxSubagentDepth`, default `2`): the hard ceiling on [nested delegation](#nested-subagents), counted from the main session (main = 0, its subagents = 1). `0` or `1` disables nesting project-wide regardless of any agent's `allowed_subagents`. Read when a subagent session is built, so a change applies to agents started after it.
 
@@ -763,7 +835,7 @@ EOF
 
 Every project now starts with concurrency 16 and grace 10, without ever touching the menu. Individual projects can still override via `/agents` → Settings.
 
-**Failure behavior:** missing file is silent; malformed JSON logs a `[pi-subagents] Ignoring malformed settings at …` warning to stderr; invalid/out-of-range field values are dropped per-field; write failures downgrade the `/agents` toast to a warning with `(session only; failed to persist)`.
+**Failure behavior:** missing file is silent; malformed JSON logs a warning without its contents and suppresses inherited routing; invalid/out-of-range ordinary fields are dropped per-field, while invalid explicit routing fields disable that route. Write failures downgrade the `/agents` toast to a warning with `(session only; failed to persist)`.
 
 ## Events
 
@@ -788,6 +860,8 @@ The four agent-lifecycle events — `subagents:started`, `:completed`, `:failed`
 `tokens.total` = `input + output + cacheWrite`. `cacheRead` is excluded — each turn's `cacheRead` is the cumulative cached prefix re-read on that one API call, so summing per-message would over-count it as a measure of work done. Use `contextUsage.percent` (surfaced as `(NN%)` in the widget) for current context size.
 
 `usage` answers the other question — what was billed — and so does include `cacheRead`, because the prefix really is re-read and re-charged on every call. It is a pi `Usage`, the same shape pi puts on `ToolResultEvent` and `AssistantMessage`, so `usage.cost.total` is where a listener already expects the money and anything pi adds to `Usage` arrives without a change here. Neither field derives from the other; `tokens` is a view model, `usage` is the data.
+
+Completed/failed payloads and persisted `subagents:record` entries also carry `routing` (`source`, `code`, `reason`, optional `model`, supplied `description`, `confidence`, `unpriced`, `guidelinePath`, `guidelineHash`) and optional `routingUsage` (classifier-only Pi `Usage`). The guideline hash is SHA-256 of the original file contents. Coding `tokens` excludes classifier tokens; total cost includes the reported classifier cost once. Settings events omit `jev.TYPESAFE_API_KEY`.
 
 ## Cross-Extension RPC
 
@@ -1005,6 +1079,8 @@ src/
   # Invocation surface
   invocation-config.ts # Shared tool-parameter schemas (isolation, join, thinking, ...)
   model-resolver.ts   # Model resolution: exact provider/modelId with fuzzy fallback
+  model-routing.ts    # Source priority and bounded native Jev classification before startup
+  routing-config.ts   # Minimal Jev model/description and credential config validation
   enabled-models.ts   # Read pi's enabledModels settings (project over global)
   model-scope.ts      # scopeModels allowlist policy, shared by top-level and nested tools
   mention.ts          # `@handle message` grammar: suggestion triggers and send parsing
@@ -1040,6 +1116,7 @@ src/
     viewer-keys.ts        # Viewer scroll keys resolved through user keybindings
     agent-mention.ts      # `@` roster (running, resumable, and startable agents) + popup rows
     schedule-menu.ts      # /agents → Scheduled jobs submenu
+    model-routing-menu.ts # Guideline/model descriptions and masked API-key editor
     select-item.ts        # Collision-safe ctx.ui.select wrapper (numbered rows)
     workflow-card.ts      # Inline workflow card (tool result and session entry)
     workflow-dialog.ts    # /agents → Workflows two-pane inspector

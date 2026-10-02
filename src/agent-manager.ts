@@ -19,10 +19,12 @@ import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import { resolveDefaultModel, resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import { getAgentConfig } from "./agent-types.js";
 import { assignHandle, handleBase } from "./mention.js";
 import { describeModel } from "./model-resolver.js";
-import type { AgentInvocation, AgentRecord, AgentTombstone, IsolationMode, MentionResolution, SubagentType, ThinkingLevel } from "./types.js";
+import { loadRoutingPolicy, ModelRouter, type RoutingInput } from "./model-routing.js";
+import type { AgentConfig, AgentInvocation, AgentRecord, AgentTombstone, IsolationMode, MentionResolution, SubagentType, ThinkingLevel } from "./types.js";
 import { addUsage, type LifetimeUsage } from "./usage.js";
 import type { CompiledSchema } from "./workflow/json-schema.js";
 import { cleanupWorktree, createWorktree, isWorktreeIsolationEnabled, pruneWorktrees, } from "./worktree.js";
@@ -167,6 +169,10 @@ interface SpawnArgs {
 }
 
 interface SpawnOptions {
+  /** Internal only; stripped at the programmatic/RPC boundary. */
+  routing?: RoutingInput;
+  /** Branch-local definition selected by a trusted invocation resolver. */
+  agentConfig?: AgentConfig;
   description: string;
   /**
    * Optional memorable name for this instance, becoming a second handle
@@ -361,6 +367,7 @@ async function shutdownChildSession(session: AgentSession | undefined): Promise<
 }
 
 export class AgentManager {
+  private router = new ModelRouter();
   private agents = new Map<string, AgentRecord>();
   private cleanupInterval: ReturnType<typeof setInterval>;
   private onComplete?: OnAgentComplete;
@@ -550,7 +557,7 @@ export class AgentManager {
       record.alias = assignHandle(handleBase(options.name), this.takenHandles());
     }
 
-    const args: SpawnArgs = { pi, ctx, type, prompt, options };
+    const args: SpawnArgs = { pi, ctx, type, prompt, options: { ...options, agentConfig: options.agentConfig ?? getAgentConfig(type) } };
 
     const pool = this.poolFor(record);
     if (pool !== undefined && !options.bypassQueue && !this.poolHasRoom(pool)) {
@@ -696,11 +703,64 @@ export class AgentManager {
       if (pool === "background") this.runningBackground--;
       else if (pool === "foreground") this.runningForeground--;
     };
+    const wasQueued = record.startGate !== undefined;
     record.status = "running";
     record.startedAt = Date.now();
     record.startGate = undefined;
     if (pool === "background") this.runningBackground++;
     else if (pool === "foreground") this.runningForeground++;
+
+    const config = options.agentConfig;
+    const provenance = options.routing;
+    const explicit = provenance
+      ? provenance.modelExplicit || provenance.thinkingExplicit
+      : options.model != null || options.thinkingLevel != null;
+    const currentPolicy = wasQueued || !provenance?.policy ? loadRoutingPolicy(options.configCwd ?? ctx.cwd) : undefined;
+    const policy = currentPolicy ?? provenance!.policy!;
+    record.routing = { mode: policy.mode, source: policy.source, fallbackSource: policy.fallbackSource,
+      code: policy.mode === "off" ? "off" : policy.diagnostic ? "guideline_unavailable" : "baseline",
+      reason: policy.mode === "off" ? "Model routing and routing guidance are off" : policy.diagnostic ?? "Using the existing model", guidelinePath: policy.guidelinePath, guidelineHash: policy.guidelineHash };
+    if (policy.diagnostic) console.warn(`[pi-subagents] ${policy.diagnostic}`);
+    const route = policy.mode === "jev" || policy.mode === "shadow" ||
+      (policy.mode === "auto" && !explicit && !config?.model && !config?.thinking && policy.source === "jev");
+    if (!options.resumeSessionFile && provenance?.entrypoint !== "internal" && route) {
+      const stop = () => this.abort(id);
+      options.signal?.addEventListener("abort", stop, { once: true });
+      if (options.signal?.aborted) stop();
+      try {
+        const routed = await this.router.choose(ctx, policy, prompt, options.description ?? type,
+          options.model ?? resolveDefaultModel(ctx.model, ctx.modelRegistry, config?.model),
+          record.abortController!.signal, usage => {
+            record.routingUsage = usage;
+            // Classifier tokens stay separate from coding/context/output budgets.
+            const delta = { input: usage.input, output: usage.output, cacheWrite: usage.cacheWrite, cacheRead: usage.cacheRead, cost: usage.cost.total };
+            this.onUsage?.(record, delta);
+            for (let current: AgentRecord | undefined = record; current; ) {
+              current.lifetimeUsage.cost = (current.lifetimeUsage.cost ?? 0) + usage.cost.total;
+              current = current.parentAgentId ? this.agents.get(current.parentAgentId) : undefined;
+            }
+          });
+        record.routing = { ...routed.decision, guidelinePath: policy.guidelinePath, guidelineHash: policy.guidelineHash };
+        if (routed.model && policy.mode === "shadow") {
+          record.routing = { ...record.routing, code: "shadow", model: undefined, suggestedModel: routed.decision.model,
+            fallbackSource: policy.source, reason: "Jev suggested a model; shadow mode kept the default-priority model" };
+        } else if (routed.model) {
+          options.model = routed.model;
+        }
+      } catch {
+        record.routing.code = "classifier_error";
+        record.routing.reason = "Jev could not choose a model; using the existing model";
+      } finally {
+        options.signal?.removeEventListener("abort", stop);
+      }
+      if (record.status !== "running" || record.abortController!.signal.aborted) {
+        this.settleRun(record, true, pool);
+        return;
+      }
+    } else if (policy.mode === "auto" && (explicit || config?.model || config?.thinking)) {
+      record.routing.code = "explicit";
+      record.routing.reason = "Explicit model or thinking; automatic routing skipped";
+    }
 
     // Worktree isolation: try to create a temporary git worktree. Strict —
     // fail loud if not possible (no silent fallback to main tree). Done BEFORE
@@ -761,6 +821,7 @@ export class AgentManager {
     const promise = runAgent(ctx, type, prompt, {
       pi,
       agentId: id,
+      agentConfig: options.agentConfig,
       model: options.model,
       maxTurns: options.maxTurns,
       isolated: options.isolated,
@@ -1556,6 +1617,7 @@ export class AgentManager {
    */
   async dispose(pi?: ExtensionAPI): Promise<void> {
     clearInterval(this.cleanupInterval);
+    this.abortAll();
     // Clear queue — via dequeue, so anyone blocked in spawnAndWait is woken
     // rather than left awaiting a gate nothing will ever resolve.
     this.dequeue(() => true);

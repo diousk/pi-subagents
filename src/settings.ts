@@ -3,12 +3,20 @@
 // - Project: <cwd>/.pi/subagents.json — written by /agents → Settings; overrides global on load
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { NO_FALLBACK } from "./agent-types.js";
+import { type JevConfig, parseJevConfig, type RoutingMode } from "./routing-config.js";
 import type { AgentMentionMode, JoinMode, ViewerMarkdownMode, WidgetMode } from "./types.js";
 
 export interface SubagentsSettings {
+  /** auto (default), observe-only shadow, Jev-first jev, or no routing guidance/off. */
+  routingMode?: RoutingMode;
+  /** Main-agent routing instructions. false disables an inherited guideline. */
+  customGuideline?: string | false;
+  /** Model descriptions and optional credentials for automatic routing. */
+  jev?: JevConfig | false;
   maxConcurrent?: number;
   /**
    * Max concurrent FOREGROUND (blocking) agents — `0` = unlimited, the default,
@@ -351,11 +359,29 @@ const MAX_TURNS_CEILING = 10_000;
 const GRACE_TURNS_CEILING = 1_000;
 const SUBAGENT_DEPTH_CEILING = 16;
 
-/** Drop fields that don't match the expected shape. Silent — garbage becomes absent. */
+/** Drop invalid operational fields; explicit invalid routing settings disable their route. */
 function sanitize(raw: unknown): SubagentsSettings {
   if (!raw || typeof raw !== "object") return {};
   const r = raw as Record<string, unknown>;
   const out: SubagentsSettings = {};
+  if (Object.hasOwn(r, "routingMode")) {
+    if (r.routingMode === "auto" || r.routingMode === "shadow" || r.routingMode === "jev" || r.routingMode === "off") {
+      out.routingMode = r.routingMode;
+    } else {
+      out.routingMode = "off";
+      console.warn("[pi-subagents] Invalid routingMode; model routing is off. Use auto, shadow, jev or off.");
+    }
+  }
+  if (Object.hasOwn(r, "customGuideline")) {
+    out.customGuideline = r.customGuideline === false ? false : typeof r.customGuideline === "string" ? r.customGuideline.trim() : "";
+  }
+  if (Object.hasOwn(r, "jev")) {
+    try { out.jev = parseJevConfig(r.jev); }
+    catch (err) {
+      out.jev = false;
+      console.warn(`[pi-subagents] Invalid Jev settings: ${err instanceof Error ? err.message : "invalid configuration"}. Using the existing model.`);
+    }
+  }
   if (
     Number.isInteger(r.maxConcurrent) &&
     (r.maxConcurrent as number) >= 1 &&
@@ -475,22 +501,41 @@ function projectPath(cwd: string): string {
 /**
  * Read a settings file. Missing file is silent (returns `{}`). A file that
  * exists but can't be parsed emits a warning to stderr so users aren't
- * silently reverted to defaults — and still returns `{}` so startup proceeds.
+ * silently reverted to defaults. Routing is disabled for that file; startup proceeds.
  */
 function readSettingsFile(path: string): SubagentsSettings {
   if (!existsSync(path)) return {};
   try {
-    return sanitize(JSON.parse(readFileSync(path, "utf-8")));
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    console.warn(`[pi-subagents] Ignoring malformed settings at ${path}: ${reason}`);
-    return {};
+    const raw: unknown = JSON.parse(readFileSync(path, "utf-8"));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("Settings must be an object");
+    return sanitize(raw);
+  } catch {
+    // JSON parser errors can quote a literal API key. Never echo file contents.
+    console.warn(`[pi-subagents] Ignoring malformed settings at ${path}. Model routing is disabled for this file.`);
+    return { routingMode: "off", customGuideline: "", jev: false };
   }
 }
 
 /** Load merged settings: global provides defaults, project overrides. */
 export function loadSettings(cwd: string = process.cwd()): SubagentsSettings {
-  return { ...readSettingsFile(globalPath()), ...readSettingsFile(projectPath(cwd)) };
+  return loadRoutingSettings(cwd).settings;
+}
+
+/** Keep the supplying config directory for relative guideline paths. */
+export function loadRoutingSettings(cwd: string): { settings: SubagentsSettings; guidelineFile?: string } {
+  const global = readSettingsFile(globalPath());
+  const project = readSettingsFile(projectPath(cwd));
+  const settings = { ...global, ...project };
+  const root = dirname(project.customGuideline !== undefined ? projectPath(cwd) : globalPath());
+  const path = settings.customGuideline;
+  return { settings, guidelineFile: typeof path === "string" && path
+    ? resolve(root, path === "~" || path.startsWith("~/") ? homedir() + path.slice(1) : path) : undefined };
+}
+
+/** Preserve routing inheritance when an unrelated menu setting is saved. */
+export function projectRoutingSettings(cwd: string): Pick<SubagentsSettings, "routingMode" | "customGuideline" | "jev"> {
+  const settings = readSettingsFile(projectPath(cwd));
+  return { routingMode: settings.routingMode, customGuideline: settings.customGuideline, jev: settings.jev };
 }
 
 /**
@@ -565,7 +610,7 @@ export function applyAndEmitLoaded(
 ): SubagentsSettings {
   const settings = loadSettings(cwd);
   applySettings(settings, appliers);
-  emit("subagents:settings_loaded", { settings });
+  emit("subagents:settings_loaded", { settings: publicSettings(settings) });
   return settings;
 }
 
@@ -582,6 +627,12 @@ export function saveAndEmitChanged(
   cwd: string = process.cwd(),
 ): { message: string; level: "info" | "warning" } {
   const persisted = saveSettings(snapshot, cwd);
-  emit("subagents:settings_changed", { settings: snapshot, persisted });
+  emit("subagents:settings_changed", { settings: publicSettings(snapshot), persisted });
   return persistToastFor(successMsg, persisted);
+}
+
+/** Public snapshots never expose a literal Typesafe credential. */
+export function publicSettings(settings: SubagentsSettings): SubagentsSettings {
+  if (!settings.jev) return { ...settings };
+  return { ...settings, jev: { models: settings.jev.models.map(entry => ({ ...entry })) } };
 }

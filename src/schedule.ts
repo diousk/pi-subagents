@@ -20,7 +20,9 @@ import { Cron } from "croner";
 import { nanoid } from "nanoid";
 import type { AgentManager } from "./agent-manager.js";
 import { normalizeMaxTurns } from "./agent-runner.js";
-import { resolveSpawnType } from "./agent-types.js";
+import { buildAgentRegistry, getAgentConfigIn, resolveSpawnTypeIn } from "./agent-types.js";
+import { loadCustomAgents } from "./custom-agents.js";
+import { resolveAgentInvocationConfig } from "./invocation-config.js";
 import { resolveModel } from "./model-resolver.js";
 import type { ScheduleStore } from "./schedule-store.js";
 import type { IsolationMode, ScheduledSubagent, SubagentType, ThinkingLevel } from "./types.js";
@@ -232,44 +234,43 @@ export class SubagentScheduler {
     // Resolve model at fire time — registry contents may have changed since the
     // job was created (auth added/removed). Fall back silently to spawn-default
     // if resolution fails; the spawn path handles undefined model gracefully.
-    let resolvedModel: any | undefined;
-    if (job.model) {
-      const r = resolveModel(job.model, ctx.modelRegistry);
-      if (typeof r !== "string") resolvedModel = r;
-    }
-
     let agentId: string;
     try {
-      // Re-resolve at fire time against the registry as it stands. This does not
-      // reload from disk (the scheduler has no reason to rebuild process-global
-      // state from a timer), so it catches changes that went through /agents or
-      // an Agent call — not a file deleted directly from a shell. The catch below turns
-      // this into lastStatus: "error" plus an error event, like any other
-      // fire-time failure.
-      const dispatch = resolveSpawnType(job.subagent_type);
+      // Read current files into a local registry. Timer dispatch must not mutate
+      // the main session's registry or freeze inherited defaults at creation.
+      const registry = buildAgentRegistry(loadCustomAgents(ctx.cwd));
+      const dispatch = resolveSpawnTypeIn(registry, job.subagent_type);
       if (!dispatch.ok) throw new Error(dispatch.message);
+      const agentConfig = getAgentConfigIn(registry, dispatch.type);
+      const invocation = resolveAgentInvocationConfig(agentConfig, {
+        model: job.model, thinking: job.thinking, max_turns: job.max_turns, isolated: job.isolated, isolation: job.isolation,
+      }, { worktreeAllowed: true, defaultRunInBackground: true });
+      const resolved = invocation.modelInput ? resolveModel(invocation.modelInput, ctx.modelRegistry) : undefined;
+      const resolvedModel = typeof resolved === "string" ? undefined : resolved;
       agentId = manager.spawn(pi, ctx, dispatch.type, job.prompt, {
+        agentConfig,
+        routing: { modelExplicit: !!invocation.modelInput, thinkingExplicit: invocation.thinking !== undefined, entrypoint: "schedule" },
         description: job.description,
         isBackground: true,
         bypassQueue: true,
         model: resolvedModel,
-        maxTurns: job.max_turns,
-        isolated: job.isolated,
-        thinkingLevel: job.thinking,
-        isolation: job.isolation,
+        maxTurns: invocation.maxTurns,
+        isolated: invocation.isolated,
+        thinkingLevel: invocation.thinking,
+        isolation: invocation.isolation,
         // A scheduled run has no tool call to build this, so without it the
         // conversation viewer shows nothing about how the job was configured.
         // The model is left out on purpose: agent-manager fills in the effective
         // one when the session reports it, and naming the pre-session pick here
         // would only be right until then.
         invocation: {
-          thinking: job.thinking,
+          thinking: invocation.thinking,
           // Normalized like the Agent tool's own snapshot: `0` means unlimited,
           // and rendering it as "max turns: 0" would read as a limit of none.
-          maxTurns: normalizeMaxTurns(job.max_turns),
-          isolated: job.isolated,
+          maxTurns: normalizeMaxTurns(invocation.maxTurns),
+          isolated: invocation.isolated,
           runInBackground: true,
-          isolation: job.isolation,
+          isolation: invocation.isolation,
         },
       });
     } catch (err) {

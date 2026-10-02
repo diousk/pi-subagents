@@ -34,6 +34,7 @@ For the channel list, the reply envelope, the per-channel snippets and the event
 
 | Field | Why it is taken away |
 |---|---|
+| `routing`, `agentConfig` | Private routing provenance and selected agent definition; callers cannot turn an explicit model into an inherited default or inject a Jev policy |
 | `parentAgentId` | Ownership. A forged parent hides your agent under someone else's nested tools |
 | `workflowId` | A forged value would hide an RPC-spawned agent inside someone else's workflow — and take it out of the concurrency pool with it |
 | `depth`, `maxSubagentDepth` | The nesting cap is inherited, not declared |
@@ -51,6 +52,12 @@ Four things that are not obvious from the tables:
 - **`bypassQueue` is not stripped.** Its own doc comment scopes it to the scheduler and the `/agents` generator, but a bus caller can set it and skip the `maxConcurrent` check.
 - **`structuredOutput` is documented "set only by the workflow host"** (`src/agent-manager.ts:231-234`) and is also not stripped.
 - **`signal` and the `on*` callbacks are function values.** They work only because the bus is in-process. A caller that genuinely serializes its payload cannot use them, and they arrive as `undefined` rather than failing.
+
+### Model routing
+
+RPC and the manager registry follow the [same routingMode setting](../README.md#model-routing) as the tools. Under `auto` (default), enabled custom agents and a configured guideline take priority; with Jev active, a fresh spawn omitting both `model` and `thinkingLevel` is classified before worktree/session creation. Providing either field skips classification only under `auto`. Under `jev`, Jev chooses first, including over explicit or agent-file models; missing credentials, invalid configuration, uncertainty or errors keep the default-priority choice. Under `shadow`, the same check records a suggestion but preserves that choice. Under `off`, routing guidance and Jev are disabled. `null` means omitted. No mode creates an extra main-agent turn to interpret descriptions or Markdown. `awaitStartup` includes classification and its two-second deadline, while cancellation stops startup.
+
+Completion events expose the credential-free `routing` decision and optional classifier-only `routingUsage`. `routing.mode` identifies the mode, `model` an applied Jev choice, `suggestedModel` an observed shadow choice, and `fallbackSource` the preserved default source. Classifier tokens are separate from coding token totals; reported classifier cost, including shadow requests, is included in total cost once. `routing.unpriced` means the catalog does not provide a price. Settings events omit literal TypeSafe keys.
 
 ### Names that look right and are not
 

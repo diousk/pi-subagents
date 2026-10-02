@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-10-02
+
+> **Breaking: requires Pi 1.0.0 or newer.** Update Pi before using this version.
+
+### Added
+- **Optional Jev routing with four modes.** `routingMode` defaults to `auto`: custom agents, then a Markdown guideline, then Jev. Choose `shadow` to record suggestions without changing models, `jev` for Jev-first selection with default-priority fallback, or `off` to disable routing guidance and classification. Configure the mode, guideline, model descriptions and optional TypeSafe credentials in `subagents.json` or `/agents → Model routing`; usage is recorded separately, including shadow calls. Jev choices honor Pi's model scope and, when enabled, the extension's `scopeModels` policy.
+
+### Changed
+- **Service-tier compatibility is documented for GPT-6.1 Sol and GPT-6 Luna.** Native transport regression tests cover `fast` and `priority` on initial and resumed turns. Pi 1.0.0's Codex cost estimate still understates responses marked `fast`; this release documents that upstream limitation without recalculating costs.
+
 ## [0.21.0] - 2026-09-30
 
 > **Breaking: requires Pi 0.99.1 or newer.** Update Pi before installing this version. Legacy transcript and session API compatibility paths have been removed.
