@@ -34,7 +34,7 @@ it.each([
   const context: ExtensionContext = ctx({ model: baseline, modelRegistry: registry, scopedModels: [] });
   const modelId = scenario === "allowed" || scenario === "scope_changed" ? "baseline" : "selected";
   const selected = await new ModelRouter().choose(context, { mode, source: "jev", jev: { TYPESAFE_API_KEY: "scope-test-key",
-    models: [{ model: `scope-faux/${modelId}`, description: "Coding" }] } }, "Review", "Review", baseline, new AbortController().signal, vi.fn());
+    models: [{ model: `scope-faux/${modelId}`, description: "Coding", thinkingLevel: "low" as const }] } }, "Review", "Review", baseline, new AbortController().signal, vi.fn());
   const blocked = scenario === "blocked";
   expect(fetch).toHaveBeenCalledTimes(blocked ? 0 : 1);
   expect(selected.decision.code).toBe(blocked ? "no_candidates" : scenario === "scope_changed" ? "unavailable_choice" : "selected");

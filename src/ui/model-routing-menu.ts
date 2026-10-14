@@ -1,8 +1,10 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Input, Text } from "@earendil-works/pi-tui";
 import { loadRoutingPolicy } from "../model-routing.js";
-import { parseJevConfig, type RoutingMode } from "../routing-config.js";
+import { parseJevConfig, ROUTING_THINKING_LEVELS, type RoutingMode } from "../routing-config.js";
 import { loadSettings, projectRoutingSettings, type SubagentsSettings } from "../settings.js";
+import type { AgentRecord } from "../types.js";
+import { showRoutingStatus } from "./routing-status.js";
 
 type RoutingSettings = Pick<SubagentsSettings, "routingMode" | "customGuideline" | "jev">;
 
@@ -21,7 +23,7 @@ export async function maskedApiKey(ctx: ExtensionCommandContext): Promise<string
 }
 
 /** Simple mode, guideline, models and credentials; saves project overrides. */
-export async function showRoutingMenu(ctx: ExtensionCommandContext): Promise<RoutingSettings | undefined> {
+export async function showRoutingMenu(ctx: ExtensionCommandContext, records: () => AgentRecord[] = () => []): Promise<RoutingSettings | undefined> {
   const settings = loadSettings(ctx.cwd);
   const local = projectRoutingSettings(ctx.cwd);
   const policy = loadRoutingPolicy(ctx.cwd);
@@ -30,12 +32,16 @@ export async function showRoutingMenu(ctx: ExtensionCommandContext): Promise<Rou
     : policy.source === "guideline" ? "Jev is inactive while a custom guideline is configured." : "";
   const note = policy.mode === "off" ? "No routing guidance or Jev requests."
     : policy.mode === "shadow" ? `Observe Jev; actual choice: ${labels[policy.source]}. Jev calls may incur charges.`
-    : policy.mode === "jev" ? `Jev first; fallback: ${labels[policy.fallbackSource ?? "baseline"]}.${policy.jev ? "" : " Configure Jev models and credentials to use Jev."}`
+    : policy.mode === "jev" ? `Wait for Jev to choose an agent/model; fallback: ${labels[policy.fallbackSource ?? "baseline"]}.${policy.jev ? "" : " Configure agent/model profiles and TypeSafe credentials to use Jev."}`
     : policy.diagnostic ?? inactive;
   const choice = await ctx.ui.select(`Model routing: ${policy.mode} — ${note || labels[policy.source]}`, [
-    "Routing mode", "Custom guideline path", "Jev models and descriptions", "Typesafe API key", "Use Pi/environment credentials", "Disable custom guideline", "Disable Jev", "Back",
+    "Runtime status", "Routing mode", "Custom guideline path", "Jev models and descriptions", "Typesafe API key", "Use Pi/environment credentials", "Disable custom guideline", "Disable Jev", "Back",
   ]);
   if (!choice || choice === "Back") return;
+  if (choice === "Runtime status") {
+    await showRoutingStatus(ctx, records);
+    return;
+  }
   if (choice === "Routing mode") {
     const modes: { mode: RoutingMode; label: string }[] = [
       { mode: "auto", label: "auto — default priority: agents, guideline, Jev, existing model" },
@@ -56,16 +62,15 @@ export async function showRoutingMenu(ctx: ExtensionCommandContext): Promise<Rou
   const models = settings.jev ? settings.jev.models.map(entry => ({ ...entry })) : [];
   // Creating a project block must not silently copy a global credential.
   const localKey = local.jev ? local.jev.TYPESAFE_API_KEY : undefined;
-  if (choice === "Use Pi/environment credentials") return models.length ? { jev: { models } } : undefined;
+  if (choice === "Use Pi/environment credentials") return { jev: { models } };
   if (choice === "Typesafe API key") {
-    if (!models.length) { ctx.ui.notify("Configure Jev models first.", "info"); return; }
     const key = await maskedApiKey(ctx);
     if (!key) return;
     try { return { jev: parseJevConfig({ models, TYPESAFE_API_KEY: key }) }; }
     catch (err) { ctx.ui.notify(err instanceof Error ? err.message : "Invalid Jev settings", "warning"); return; }
   }
   for (;;) {
-    const options = [...models.map((entry, index) => `${index + 1}. ${entry.model}`), "Add model", "Save", "Cancel"];
+    const options = [...models.map((entry, index) => `${index + 1}. ${entry.model} (${entry.thinkingLevel})`), "Add model", "Save", "Cancel"];
     const action = await ctx.ui.select("Jev models — describe which tasks each model should handle", options);
     if (!action || action === "Cancel") return;
     if (action === "Save") {
@@ -83,7 +88,12 @@ export async function showRoutingMenu(ctx: ExtensionCommandContext): Promise<Rou
     if (!model) continue;
     const description = await ctx.ui.editor("Tasks this model is suitable for", current?.description ?? "");
     if (!description?.trim()) continue;
-    const entry = { model: model.trim(), description: description.trim() };
+    const selectedLevel = await ctx.ui.select(`Thinking level (required${current ? `; current: ${current.thinkingLevel}` : ""})`, [...ROUTING_THINKING_LEVELS]);
+    const thinkingLevel = ROUTING_THINKING_LEVELS.find(level => level === selectedLevel);
+    if (!thinkingLevel) continue;
+    const instruction = await ctx.ui.editor("Additional instruction (optional; blank to omit)", current?.instruction ?? "");
+    if (instruction === undefined) continue;
+    const entry = { model: model.trim(), description: description.trim(), thinkingLevel, ...(instruction.trim() ? { instruction: instruction.trim() } : {}) };
     if (current) models[index] = entry;
     else models.push(entry);
   }

@@ -18,14 +18,18 @@ afterEach(() => {
 });
 
 const cases = ["openai", "openai-codex"].flatMap(provider => ["gpt-6.1-sol", "gpt-6-luna"].flatMap(modelId => [
-  { provider, modelId, requested: "fast", returned: "fast" },
-  { provider, modelId, requested: "priority", returned: "fast" },
-  { provider, modelId, requested: "priority", returned: "priority" },
-  { provider, modelId, requested: "fast", returned: "default" },
-  { provider, modelId, requested: undefined, returned: "default" },
+  ...[
+    { provider, modelId, requested: "fast", returned: "fast" },
+    { provider, modelId, requested: "priority", returned: "fast" },
+    { provider, modelId, requested: "priority", returned: "priority" },
+    { provider, modelId, requested: "fast", returned: "default" },
+    { provider, modelId, requested: undefined, returned: "fast" },
+    { provider, modelId, requested: undefined, returned: "default" },
+  ].map(entry => ({ ...entry, incomplete: false })),
+  { provider, modelId, requested: "fast", returned: "fast", incomplete: true },
 ]));
 
-it.each(cases)("$provider/$modelId sends $requested with returned $returned on initial and resumed turns", async ({ provider, modelId, requested, returned }) => {
+it.each(cases)("$provider/$modelId sends $requested with returned $returned (incomplete=$incomplete) on initial and resumed turns", async ({ provider, modelId, requested, returned, incomplete }) => {
   const requests: { url: string; payload: Record<string, unknown> }[] = [];
   // Fake only the HTTP boundary: Pi's catalog, authentication, session,
   // payload hook, provider serialization and response parser stay native.
@@ -38,9 +42,12 @@ it.each(cases)("$provider/$modelId sends $requested with returned $returned on i
       content: [{ type: "output_text", text: "OK", annotations: [] }] };
     const events = [
       { type: "response.output_item.added", output_index: 0, item: { ...item, status: "in_progress", content: [] } },
+      { type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: item.id, delta: "OK" },
       { type: "response.output_item.done", output_index: 0, item },
-      { type: "response.completed", response: { id: `resp_${requests.length}`, status: "completed", output: [item], service_tier: returned,
-        usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11, input_tokens_details: { cached_tokens: 0 } } } },
+      { type: incomplete ? "response.incomplete" : provider === "openai-codex" && requested === "priority" && returned === "fast" ? "response.done" : "response.completed",
+        response: { id: `resp_${requests.length}`, status: incomplete ? "incomplete" : "completed", output: [item], service_tier: returned,
+          ...(incomplete ? { incomplete_details: { reason: "max_output_tokens" } } : {}),
+          usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11, input_tokens_details: { cached_tokens: 4, cache_write_tokens: 2 } } } },
     ];
     return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""),
       { headers: { "content-type": "text/event-stream" } });
@@ -87,12 +94,18 @@ it.each(cases)("$provider/$modelId sends $requested with returned $returned on i
     else expect(request.payload.service_tier).toBe(requested);
   }
   expect(usage).toHaveBeenCalledTimes(2);
+  const expectedCost = (4 * model.cost.input + model.cost.output + 4 * model.cost.cacheRead + 2 * model.cost.cacheWrite)
+    / 1_000_000 * (returned === "fast" || returned === "priority" ? 2 : 1);
   for (const [turn] of usage.mock.calls) {
-    expect(turn).toMatchObject({ input: 10, output: 1, cacheRead: 0, cacheWrite: 0 });
-    // Pi 1.0.0's Codex adapter omits the fast pricing multiplier. Do not
-    // encode that bug as the expected price or calculate our own replacement.
-    if (provider === "openai-codex" && returned === "fast") continue;
-    const expectedCost = (10 * model.cost.input + model.cost.output) / 1_000_000 * (returned === "fast" || returned === "priority" ? 2 : 1);
-    expect(turn.cost).toBeCloseTo(expectedCost, 12);
+    expect.soft(turn).toMatchObject({ input: 4, output: 1, cacheRead: 4, cacheWrite: 2 });
+    expect.soft(turn.cost).toBeCloseTo(expectedCost, 12);
   }
+  const storedCosts = session.sessionManager.getEntries().flatMap(entry =>
+    entry.type === "message" && entry.message.role === "assistant" ? [entry.message.usage.cost.total] : []);
+  expect.soft(storedCosts).toHaveLength(2);
+  for (const cost of storedCosts) expect.soft(cost).toBeCloseTo(expectedCost, 12);
+  for (const message of session.messages) {
+    if (message.role === "assistant") expect.soft(message.stopReason).toBe(incomplete ? "length" : "stop");
+  }
+  expect.soft(session.getSessionStats().cost).toBeCloseTo(expectedCost * 2, 12);
 });

@@ -36,7 +36,7 @@ const usage: Usage = {
   input: 50, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 52,
   cost: { input: 0.01, output: 0.001, cacheRead: 0, cacheWrite: 0, total: 0.011 },
 };
-const jev = { TYPESAFE_API_KEY: "private-route-key", models: [{ model: "test/selected", description: "Complex coding tasks" }] };
+const jev = { TYPESAFE_API_KEY: "private-route-key", models: [{ model: "test/selected", description: "Complex coding tasks", thinkingLevel: "low" as const }] };
 const policy: RoutingPolicy = { mode: "auto", source: "jev", jev };
 function result(choice = "route_0", confidence = 0.9): ClassifierResult {
   return { api: "typesafe-system-one", provider: "typesafe", model: "jev-latest", timestamp: 0, stopReason: "stop", usage,
@@ -149,10 +149,10 @@ describe("routing configuration and priority", () => {
 
   it("replaces the entire global Jev block without inheriting a secret", () => {
     writeFileSync(join(process.env.PI_CODING_AGENT_DIR!, "subagents.json"), JSON.stringify({ jev }));
-    settings({ jev: { models: [{ model: "test/baseline", description: "Easy tasks" }] } });
-    expect(loadSettings(hermetic.dir).jev).toEqual({ models: [{ model: "test/baseline", description: "Easy tasks" }] });
+    settings({ jev: { models: [{ model: "test/baseline", description: "Easy tasks", thinkingLevel: "low" as const }] } });
+    expect(loadSettings(hermetic.dir).jev).toEqual({ models: [{ model: "test/baseline", description: "Easy tasks", thinkingLevel: "low" as const }] });
     settings({ jev: { models: [] } });
-    expect(loadSettings(hermetic.dir).jev).toBe(false);
+    expect(loadSettings(hermetic.dir).jev).toEqual({ models: [] });
     settings({});
     expect(loadSettings(hermetic.dir).jev).toEqual(jev);
     expect(projectRoutingSettings(hermetic.dir).jev).toBeUndefined();
@@ -172,10 +172,10 @@ describe("routing configuration and priority", () => {
     expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain("private-route-key");
   });
 
-  it.each([{}, { models: [] }, { models: [{ model: "fuzzy", description: "task" }] },
-    { models: [jev.models[0], jev.models[0]] }, { models: [{ model: "test/a", description: " " }] },
-    { models: [{ model: "test/a", description: "x".repeat(4001) }] }, { ...jev, mode: "auto" },
-    { models: Array.from({ length: 255 }, (_, index) => ({ model: `test/${index}`, description: "task" })) },
+  it.each([{ models: null }, { models: "invalid" }, { models: [{ model: "fuzzy", description: "task", thinkingLevel: "low" as const }] },
+    { models: [jev.models[0], jev.models[0]] }, { models: [{ model: "test/a", description: " ", thinkingLevel: "low" as const }] },
+    { models: [{ model: "test/a", description: "x".repeat(4001), thinkingLevel: "low" as const }] }, { ...jev, mode: "auto" },
+    { models: Array.from({ length: 255 }, (_, index) => ({ model: `test/${index}`, description: "task", thinkingLevel: "low" as const })) },
   ])("rejects invalid Jev configuration %#", value => {
     expect(() => parseJevConfig(value)).toThrow();
   });
@@ -245,16 +245,18 @@ describe("routing modes", () => {
     expect(classify).toHaveBeenCalledTimes(1);
   });
 
-  it.each([undefined, false, { ...jev, models: [] }, { ...jev, TYPESAFE_API_KEY: "" },
+  it.each([undefined, false, { models: [] }, { ...jev, TYPESAFE_API_KEY: "" },
     { ...jev, TYPESAFE_API_KEY: "private-route-key\ninvalid" }, { ...jev, TYPESAFE_API_KEY: 42 },
-  ])("Jev-first invalid or absent config %# retains agent guidance without spending", async config => {
+  ])("Jev-first invalid config or missing credentials %# retains agent guidance without spending", async config => {
     agent("reviewer.md");
     settings({ routingMode: "jev", jev: config });
+    const agentOnly = config === undefined || (config && config.models.length === 0);
+    if (agentOnly) vi.mocked(context.modelRegistry.getAvailableOfType).mockResolvedValue([]);
     const policy = loadRoutingPolicy(hermetic.dir);
     expect(routingGuidance(policy)).toContain("reviewer: Review code");
     manager = new AgentManager();
     const { record } = await manager.spawnAndWait(makePi().pi, context, "general-purpose", "task", { model: baseline });
-    expect(record.routing).toMatchObject({ code: "config_unavailable", fallbackSource: "agents" });
+    expect(record.routing).toMatchObject({ code: agentOnly ? "credentials_unavailable" : "config_unavailable", fallbackSource: "agents" });
     expect(record.invocation?.modelId).toBe("test/baseline");
     expect(classify).not.toHaveBeenCalled();
     expect(JSON.stringify(vi.mocked(console.warn).mock.calls)).not.toContain("private-route-key");

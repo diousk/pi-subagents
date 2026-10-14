@@ -42,7 +42,7 @@ it.each(["selected", "uncertain", "rejected_key", "missing_key"] as const)("Jev-
   writeFileSync(join(hermetic.dir, ".pi", "agents", "reviewer.md"), "---\ndescription: Review\nmodel: pinned-faux/pinned\n---\nReview.");
   writeFileSync(join(hermetic.dir, ".pi", "subagents.json"), JSON.stringify({ routingMode: "jev", jev: {
     ...(outcome === "missing_key" ? {} : { TYPESAFE_API_KEY: "private-native-key" }),
-    models: [{ model: "pinned-faux/selected", description: "Coding" }],
+    models: [{ model: "pinned-faux/selected", description: "Coding", thinkingLevel: "low" as const }],
   }, rememberAgents: false, outputTranscript: false }));
   registerAgents(loadCustomAgents(hermetic.dir));
   manager = new AgentManager();
@@ -74,7 +74,7 @@ it.each(["literal", "environment"])("uses Pi 1.0's real registry, authentication
   const onUsage = vi.fn<(usage: Usage) => void>();
   const key = credentialSource === "literal" ? { TYPESAFE_API_KEY: "literal-key" } : {};
   const chosen = await new ModelRouter().choose(context, { mode: "auto", source: "jev", jev: { ...key,
-    models: [{ model: `${model!.provider}/${model!.id}`, description: "Coding tasks" }] } }, "Review this function", "review", model, new AbortController().signal, onUsage);
+    models: [{ model: `${model!.provider}/${model!.id}`, description: "Coding tasks", thinkingLevel: "low" as const }] } }, "Review this function", "review", model, new AbortController().signal, onUsage);
   expect(chosen.model?.id).toBe(model!.id);
   expect(chosen.decision).toMatchObject({ source: "jev", unpriced: true });
   expect(fetch).toHaveBeenCalledTimes(1);
@@ -107,7 +107,7 @@ it.each(["auto", "shadow", "jev", "off"] as const)("creates a real child session
   const baseline = registry.find("routing-faux", "baseline")!;
   expect(registry.getAvailable().some(model => model.provider === "routing-faux" && model.id === "selected")).toBe(true);
   writeFileSync(join(hermetic.dir, ".pi", "subagents.json"), JSON.stringify({ routingMode: mode, jev: { TYPESAFE_API_KEY: "native-key",
-    models: [{ model: "routing-faux/selected", description: "Coding" }] }, rememberAgents: false, outputTranscript: false }));
+    models: [{ model: "routing-faux/selected", description: "Coding", thinkingLevel: "low" as const }] }, rememberAgents: false, outputTranscript: false }));
   manager = new AgentManager();
   const context: ExtensionContext = ctx({ model: baseline, modelRegistry: registry, scopedModels: [] });
   const { record } = await manager.spawnAndWait(makePi().pi, context, "general-purpose", "Say routed reply", {
@@ -143,7 +143,7 @@ it.each(["auto", "shadow", "jev", "off"] as const)("runs %s routing through Pi's
   runtime.registerNativeProvider(faux.provider);
   await runtime.refresh({ allowNetwork: false });
   writeFileSync(join(hermetic.dir, ".pi", "subagents.json"), JSON.stringify({ routingMode: mode, jev: { TYPESAFE_API_KEY: "codemode-key",
-    models: [{ model: "codemode-faux/selected", description: "Coding" }] }, rememberAgents: false, outputTranscript: false }));
+    models: [{ model: "codemode-faux/selected", description: "Coding", thinkingLevel: "low" as const }] }, rememberAgents: false, outputTranscript: false }));
   const loader = new DefaultResourceLoader({ cwd: hermetic.dir, agentDir: process.env.PI_CODING_AGENT_DIR!,
     noExtensions: true, noSkills: true, noPromptTemplates: true, noContextFiles: true,
     extensionFactories: [extension, createCodemodeExtension({ mode: "only", models: false })] });

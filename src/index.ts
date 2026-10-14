@@ -19,7 +19,7 @@ import { abortable } from "./abortable.js";
 import { hasAgentBadge, renderAgentName } from "./agent-color.js";
 import { buildNewAgentFile, disableInContent, enableInContent, isEmptyStub, locateAgentFile, personalAgentsDir, projectAgentsDir, serializeAgentFile } from "./agent-file-toggle.js";
 import { AgentManager, isTopLevelAgent } from "./agent-manager.js";
-import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, getRememberAgents, isServiceTierApi, normalizeMaxTurns, resolveEffectiveMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setGraceTurns, setRememberAgents, steerAgent } from "./agent-runner.js";
+import { getAgentConversation, getDefaultMaxTurns, getGraceTurns, getRememberAgents, normalizeMaxTurns, resolveEffectiveMaxTurns, SUBAGENT_TOOL_NAMES, setDefaultMaxTurns, setGraceTurns, setRememberAgents, steerAgent, supportsServiceTier } from "./agent-runner.js";
 import { BUILTIN_TOOL_NAMES, getAgentConfig, getAllTypes, getAvailableTypes, getConfig, getFallbackSubagent, isDefaultsDisabled, NO_FALLBACK, registerAgents, resolveSpawnType, resolveType, setDefaultsDisabled, setFallbackSubagent } from "./agent-types.js";
 import { inChildSessionContext } from "./child-context.js";
 import { type RpcHandle, registerRpcHandlers } from "./cross-extension-rpc.js";
@@ -1864,8 +1864,9 @@ Terse command-style prompts produce shallow, generic work.
       // downstream consumer keys off record.outputFile being set, so no spawn
       // path can re-enable the transcript by accident.
       const outputTranscript = customConfig?.outputTranscript ?? getOutputTranscriptDefault();
-      const attachTranscript = (rec: AgentRecord | undefined, agentId: string): void => {
-        if (!rec || !outputTranscript) return;
+      const attachTranscript = (rec: AgentRecord | undefined, agentId: string, config = customConfig): void => {
+        if (!rec || rec.outputFile || (!rec.session && (rec.status === "queued" || routingPolicy.mode === "jev" || rec.routing?.mode === "jev"))) return;
+        if (!(config?.outputTranscript ?? getOutputTranscriptDefault())) return;
         rec.outputFile = createOutputFilePath(ctx.cwd, agentId, ctx.sessionManager.getSessionId());
         writeInitialEntry(rec.outputFile, agentId, params.prompt, ctx.cwd);
       };
@@ -1892,7 +1893,7 @@ Terse command-style prompts produce shallow, generic work.
         modelName,
         modelId,
         thinking,
-        serviceTier: model && isServiceTierApi(model.api) ? customConfig?.serviceTier : undefined,
+        serviceTier: supportsServiceTier(model) ? customConfig?.serviceTier : undefined,
         // Only set where the agent file outranked the caller, so the surfaces can
         // disclose a parameter that was accepted but could not take effect (#182).
         requestedThinking: resolvedConfig.overridden?.thinking,
@@ -2066,9 +2067,11 @@ Terse command-style prompts produce shallow, generic work.
         // rather than closing over a value that doesn't exist yet.
         let id: string;
         const origBgOnSession = bgCallbacks.onSessionCreated;
-        bgCallbacks.onSessionCreated = (session: any) => {
+        bgCallbacks.onSessionCreated = (session: any, config?: AgentConfig) => {
           origBgOnSession(session);
           const rec = manager.getRecord(id);
+          attachTranscript(rec, id, config);
+          bgState.maxTurns = normalizeMaxTurns(rec?.invocation?.maxTurns ?? getDefaultMaxTurns());
           if (rec?.outputFile) {
             rec.outputCleanup = streamToOutputFile(session, rec.outputFile, id, ctx.cwd);
           }
@@ -2108,6 +2111,7 @@ Terse command-style prompts produce shallow, generic work.
         // copy is an awaited git call. Wait for it here, after the synchronous
         // wiring above, so a strict-isolation failure still fails THIS tool
         // call instead of being reported as a subagent that ran (#179).
+        if (routingPolicy.mode === "jev" && record?.startGate) await record.startGate;
         await manager.awaitStartup(id);
 
         if (joinMode == null || joinMode === 'async') {
@@ -2130,7 +2134,7 @@ Terse command-style prompts produce shallow, generic work.
         // Emit created event
         pi.events.emit("subagents:created", {
           id,
-          type: subagentType,
+          type: record?.type ?? subagentType,
           description: params.description,
           isBackground: true,
         });
@@ -2139,7 +2143,7 @@ Terse command-style prompts produce shallow, generic work.
         return textResult(
           `${fallbackNote}Agent ${isQueued ? "queued" : "started"} in background.\n` +
           `Agent ID: ${id}\n` +
-          `Type: ${displayName}\n` +
+          `Type: ${record ? getDisplayName(record.type) : displayName}\n` +
           `Description: ${params.description}\n` +
           (record?.outputFile ? `Output file: ${record.outputFile}\n` : "") +
           (isQueued ? `Position: queued (max ${manager.getMaxConcurrent()} concurrent)\n` : "") +
@@ -2195,7 +2199,7 @@ Terse command-style prompts produce shallow, generic work.
       // The output file path is set synchronously after spawn (below),
       // before onSessionCreated fires — same pattern as background agents.
       const origOnSession = fgCallbacks.onSessionCreated;
-      fgCallbacks.onSessionCreated = (session: any) => {
+      fgCallbacks.onSessionCreated = (session: any, config?: AgentConfig) => {
         origOnSession(session);
         // It really started — stop reporting it as queued, and repaint now
         // rather than leaving the stale line up for the next spinner tick.
@@ -2217,6 +2221,8 @@ Terse command-style prompts produce shallow, generic work.
         // Stream conversation to output file (foreground agent logging)
         if (fgId) {
           const rec = manager.getRecord(fgId);
+          attachTranscript(rec, fgId, config);
+          fgState.maxTurns = normalizeMaxTurns(rec?.invocation?.maxTurns ?? getDefaultMaxTurns());
           if (rec?.outputFile) {
             rec.outputCleanup = streamToOutputFile(session, rec.outputFile, fgId, ctx.cwd);
           }
@@ -2994,7 +3000,7 @@ Terse command-style prompts produce shallow, generic work.
       await showSettings(ctx);
       await showAgentsMenu(ctx);
     } else if (choice === "Model routing") {
-      const patch = await showRoutingMenu(ctx);
+      const patch = await showRoutingMenu(ctx, () => manager.listAgents());
       if (patch) {
         const toast = saveAndEmitChanged({ ...snapshotSettings(), ...patch }, "Model routing settings updated", (event, payload) => pi.events.emit(event, payload), ctx.cwd);
         ctx.ui.notify(toast.message, toast.level);
@@ -3328,7 +3334,7 @@ description: <one-line description shown in UI>
 color: <optional agent name badge color: red, blue, green, yellow, purple, orange, pink, cyan, an Agency Agents alias, or quoted "#RRGGBB">
 tools: <comma-separated built-in tools: read, bash, edit, write, grep, find, ls. Use "none" for no tools. Omit for all tools>
 model: <optional model as "provider/modelId", e.g. "anthropic/claude-haiku-4-5". Omit to inherit parent model>
-service_tier: <optional OpenAI Responses/Codex processing tier: auto, default, flex, priority, or scale. Use only with those APIs; omit for other APIs or the provider default>
+service_tier: <optional OpenAI Responses/Codex processing tier: auto, default, flex, priority, or scale. Omit for GitHub Copilot, other APIs, or the provider default>
 thinking: <optional thinking level: ${THINKING_LEVELS.join(", ")}. Omit to inherit>
 max_turns: <optional max agentic turns. 0 or omit for unlimited (default)>
 prompt_mode: <"replace" (body IS the full system prompt) or "append" (body is appended to default prompt). Default: replace>
@@ -3360,7 +3366,7 @@ Guidelines for choosing settings:
 - Use prompt_mode: replace for fully custom agents with their own personality/instructions
 - Set inherit_context: true if the agent needs to know what was discussed in the parent conversation
 - Set isolated: true if the agent should NOT have access to MCP servers or other extensions
-- Set service_tier: priority only when the model uses an OpenAI Responses/Codex API; omit it for other providers
+- Set service_tier: priority only when the model uses an OpenAI Responses/Codex API; omit it for GitHub Copilot and other providers that do not support it
 - Set output_transcript: false to skip writing this agent's transcript; this alone doesn't keep the run off disk (persist_session, isolation: worktree commits, and memory still write) — set those too if that's the goal
 - Only include frontmatter fields that differ from defaults — omit fields where the default is fine
 
@@ -3679,7 +3685,7 @@ Write the file using the write tool. Only write the file, nothing else.`;
           id: "showModel",
           label: "Show model",
           description:
-            "Name the model driving each agent, its thinking level, and configured OpenAI service tier when the effective API supports it, on the widget's running rows. The Agent tool result and the conversation viewer show these details when applicable — this adds them to the widget, where the row is already dense.",
+            "Name the model driving each agent, its thinking level, and configured OpenAI service tier when the effective model supports it, on the widget's running rows. The Agent tool result and the conversation viewer show these details when applicable — this adds them to the widget, where the row is already dense.",
           currentValue: isShowModelEnabled() ? "on" : "off",
           values: ["on", "off"],
         },

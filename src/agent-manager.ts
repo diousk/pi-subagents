@@ -19,7 +19,7 @@ import { statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
 import type { AgentSession, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { resolveDefaultModel, resumeAgent, runAgent, type ToolActivity } from "./agent-runner.js";
+import { resolveDefaultModel, resumeAgent, runAgent, supportsServiceTier, type ToolActivity } from "./agent-runner.js";
 import { getAgentConfig } from "./agent-types.js";
 import { assignHandle, handleBase } from "./mention.js";
 import { describeModel } from "./model-resolver.js";
@@ -290,7 +290,7 @@ interface SpawnOptions {
   /** Called on streaming text deltas from the assistant response. */
   onTextDelta?: (delta: string, fullText: string) => void;
   /** Called when the agent session is created (for accessing session stats). */
-  onSessionCreated?: (session: AgentSession) => void;
+  onSessionCreated?: (session: AgentSession, agentConfig?: AgentConfig) => void;
   /** Called at the end of each agentic turn with the cumulative count. */
   onTurnEnd?: (turnCount: number) => void;
   /** Called once per assistant message_end with that message's usage delta. */
@@ -710,6 +710,7 @@ export class AgentManager {
     if (pool === "background") this.runningBackground++;
     else if (pool === "foreground") this.runningForeground++;
 
+    let routingInstruction: string | undefined;
     const config = options.agentConfig;
     const provenance = options.routing;
     const explicit = provenance
@@ -724,6 +725,8 @@ export class AgentManager {
     const route = policy.mode === "jev" || policy.mode === "shadow" ||
       (policy.mode === "auto" && !explicit && !config?.model && !config?.thinking && policy.source === "jev");
     if (!options.resumeSessionFile && provenance?.entrypoint !== "internal" && route) {
+      record.routing.code = "pending";
+      record.routing.reason = "Waiting for Jev to compare agent and model profiles";
       const stop = () => this.abort(id);
       options.signal?.addEventListener("abort", stop, { once: true });
       if (options.signal?.aborted) stop();
@@ -739,13 +742,29 @@ export class AgentManager {
               current.lifetimeUsage.cost = (current.lifetimeUsage.cost ?? 0) + usage.cost.total;
               current = current.parentAgentId ? this.agents.get(current.parentAgentId) : undefined;
             }
-          });
+          }, provenance?.allowedAgentTypes);
         record.routing = { ...routed.decision, guidelinePath: policy.guidelinePath, guidelineHash: policy.guidelineHash };
         if (routed.model && policy.mode === "shadow") {
-          record.routing = { ...record.routing, code: "shadow", model: undefined, suggestedModel: routed.decision.model,
+          record.routing = { ...record.routing, code: "shadow", model: undefined, agent: undefined, thinkingLevel: undefined, suggestedModel: routed.decision.model,
             fallbackSource: policy.source, reason: "Jev suggested a model; shadow mode kept the default-priority model" };
         } else if (routed.model) {
+          if (routed.agentConfig) {
+            const selected = routed.agentConfig;
+            type = selected.name;
+            record.type = type;
+            options.agentConfig = selected;
+            options.maxTurns = selected.maxTurns ?? options.maxTurns;
+            options.isolated = selected.isolated ?? options.isolated;
+            options.inheritContext = selected.inheritContext ?? options.inheritContext;
+            if (selected.isolation !== undefined) options.isolation = selected.isolation === "worktree" ? "worktree" : undefined;
+            record.invocation = { ...record.invocation, maxTurns: options.maxTurns, isolated: options.isolated,
+              inheritContext: options.inheritContext, isolation: options.isolation };
+          }
+          routingInstruction = routed.instruction;
           options.model = routed.model;
+          options.thinkingLevel = routed.thinkingLevel;
+          record.invocation = { ...record.invocation, thinking: routed.thinkingLevel, requestedThinking: undefined };
+          record.invocation.serviceTier = supportsServiceTier(routed.model) ? options.agentConfig?.serviceTier : undefined;
         }
       } catch {
         record.routing.code = "classifier_error";
@@ -822,6 +841,7 @@ export class AgentManager {
       pi,
       agentId: id,
       agentConfig: options.agentConfig,
+      routingInstruction,
       model: options.model,
       maxTurns: options.maxTurns,
       isolated: options.isolated,
@@ -886,6 +906,9 @@ export class AgentManager {
           // AND, one line later, being replaced by the effective one.
           const requested = record.invocation.requestedThinking ?? record.invocation.thinking;
           Object.assign(record.invocation, describeModel(session.model));
+          if (options.agentConfig?.serviceTier) {
+            record.invocation.serviceTier = supportsServiceTier(session.model) ? options.agentConfig.serviceTier : undefined;
+          }
           // Guarded for the reason above: a session that reports no level keeps
           // the request rather than losing it. Overwriting unconditionally would
           // turn an older or stubbed session into a blank `thinking:` tag, which
@@ -904,7 +927,7 @@ export class AgentManager {
           }
           record.pendingSteers = undefined;
         }
-        options.onSessionCreated?.(session);
+        options.onSessionCreated?.(session, options.agentConfig);
       },
     })
       .then(async ({ responseText, session, aborted, steered, failure, structuredJson, structuredRetried }) => {

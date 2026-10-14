@@ -64,7 +64,7 @@ interface NestedSpawnOptions {
   invocation?: AgentInvocation;
   signal?: AbortSignal;
   onAssistantUsage?: (usage: { input: number; output: number; cacheWrite: number }) => void;
-  onSessionCreated?: (session: AgentSession) => void;
+  onSessionCreated?: (session: AgentSession, agentConfig?: AgentConfig) => void;
   depth: number;
   parentAgentId: string;
   maxSubagentDepth: number;
@@ -259,7 +259,7 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       const rootSessionId = context.manager.getRecord(context.parentAgentId)?.rootSessionId;
       const childDepth = context.depth + 1;
       const options: NestedSpawnOptions = {
-        routing: { policy: loadRoutingPolicy(context.configCwd, registry), modelExplicit: !!invocation.modelInput, thinkingExplicit: invocation.thinking !== undefined, entrypoint: "nested" },
+        routing: { policy: loadRoutingPolicy(context.configCwd, registry), allowedAgentTypes: allowed ? [...allowed] : undefined, modelExplicit: !!invocation.modelInput, thinkingExplicit: invocation.thinking !== undefined, entrypoint: "nested" },
         agentConfig: config,
         description: params.description,
         model,
@@ -308,20 +308,18 @@ export function createNestedSubagentTools(context: NestedToolContext): ToolDefin
       // explain itself. Filed under the ROOT session and this branch's config
       // root, so a nested transcript lands in the same `tasks/` directory as its
       // ancestors' rather than in a directory of its own.
-      const transcriptSessionId =
-        rootSessionId !== undefined && (config?.outputTranscript ?? getOutputTranscriptDefault())
-          ? rootSessionId
-          : undefined;
       let childId: string | undefined;
-      const attachTranscript = (id: string): void => {
+      const attachTranscript = (id: string, selected = config): void => {
         childId = id;
-        if (transcriptSessionId === undefined) return;
+        if (rootSessionId === undefined) return;
         const rec = context.manager.getRecord(id);
-        if (!rec) return;
-        rec.outputFile = createOutputFilePath(context.configCwd, id, transcriptSessionId);
+        if (!rec || rec.outputFile || (!rec.session && (rec.status === "queued" || options.routing?.policy?.mode === "jev" || rec.routing?.mode === "jev"))) return;
+        if (!(selected?.outputTranscript ?? getOutputTranscriptDefault())) return;
+        rec.outputFile = createOutputFilePath(context.configCwd, id, rootSessionId);
         writeInitialEntry(rec.outputFile, id, params.prompt, ctx.cwd);
       };
-      options.onSessionCreated = (session) => {
+      options.onSessionCreated = (session, selected) => {
+        if (childId !== undefined) attachTranscript(childId, selected);
         const rec = childId === undefined ? undefined : context.manager.getRecord(childId);
         if (rec?.outputFile && childId !== undefined) {
           rec.outputCleanup = streamToOutputFile(session, rec.outputFile, childId, ctx.cwd);

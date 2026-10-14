@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Codex Fast costs include the processing-tier multiplier.** Responses marked `fast`, including replies cut short by token limits, now use the model's catalog rates with the Fast multiplier before subagent usage callbacks and session persistence. Standard fallbacks and estimates already adjusted by Pi or another extension retain their reported costs.
+
+## [0.25.1] - 2026-10-05
+
+### Fixed
+- **GitHub Copilot agents omit `service_tier`.** Copilot rejects the field even on its Responses API. Configured tiers are ignored for Copilot requests and hidden from agent UI, including after model routing.
+
+## [0.25.0] - 2026-10-02
+
+### Added
+- **Optional Jev model instructions.** Configure `instruction` per model in JSON or `/agents`; successful selection appends it to the child system prompt. Shadow and fallback preserve the original instructions.
+- **Jev selects custom agent profiles.** In `jev` and `shadow` modes, enabled agent files and `jev.models` compete in one comparison; `jev` waits for the decision before starting the selected agent with its prompt, tools and model settings. Agent-only routing needs no duplicated model list, and runtime status shows selected and suggested agents. `auto` priority, low-confidence fallback and nested agent permissions are preserved.
+
+## [0.24.0] - 2026-10-02
+
+### Added
+- **Routing runtime status in `/agents`.** Open Model routing → Runtime status to inspect effective configuration, credential presence, eligible profiles and the latest retained routing decisions, including fallback reasons and actual model/thinking. The refreshable, read-only view hides API keys and makes no classifier request.
+
+## [0.23.0] - 2026-10-02
+
+### Changed
+- **BREAKING: Jev model profiles require `thinkingLevel`.** Add `minimal`, `low`, `medium`, `high`, `xhigh` or `max` to every `jev.models` entry. Successful routing applies the model and thinking level together; shadow and fallback preserve the original pair. The routing menu requires a level, and invalid or missing levels disable the Jev block with a diagnostic.
+
 ## [0.22.0] - 2026-10-02
 
 > **Breaking: requires Pi 1.0.0 or newer.** Update Pi before using this version.

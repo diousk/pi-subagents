@@ -133,7 +133,6 @@ import {
   getDefaultMaxTurns,
   getGraceTurns,
   installServiceTierPayload,
-  isServiceTierApi,
   parseExtensionsSpec,
   parseExtSelectors,
   resolveDefaultModel,
@@ -144,6 +143,7 @@ import {
   setDefaultMaxTurns,
   setGraceTurns,
   setRememberAgents,
+  supportsServiceTier,
 } from "../src/agent-runner.js";
 import { compileJsonSchema } from "../src/workflow/json-schema.js";
 
@@ -477,7 +477,7 @@ describe("agent-runner service tier payload", () => {
       const prior = vi.fn(async () => ({ service_tier: "default", unchanged: true }));
       const session = { agent: { onPayload: prior } } as any;
 
-      expect(isServiceTierApi(api)).toBe(false);
+      expect(supportsServiceTier(api === undefined ? undefined : { api, provider: "openai" })).toBe(false);
       installServiceTierPayload(session, "priority");
 
       await expect(session.agent.onPayload({ input: "unchanged" }, requestModel(api)))

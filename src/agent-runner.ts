@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
-import type { Model } from "@earendil-works/pi-ai";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionContext, LoadExtensionsResult } from "@earendil-works/pi-coding-agent";
 import {
   type AgentSession,
@@ -26,6 +26,7 @@ import { detectEnv } from "./env.js";
 import { buildMemoryBlock, buildReadOnlyMemoryBlock } from "./memory.js";
 import { createNestedSubagentTools, getMaxSubagentDepth, type NestedAgentManager } from "./nested-tools.js";
 import { buildAgentPrompt, type PromptExtras } from "./prompts.js";
+import { serviceTierCostExtension } from "./service-tier-cost.js";
 import { preloadSkills } from "./skill-loader.js";
 import { createStructuredCapture, createStructuredOutputTool, structuredRetryPrompt } from "./structured-output.js";
 import type { AgentConfig, ServiceTier, SubagentType, ThinkingLevel } from "./types.js";
@@ -51,9 +52,9 @@ const EXCLUDED_TOOL_NAMES: string[] = Object.values(SUBAGENT_TOOL_NAMES);
 /** APIs whose request payloads support OpenAI service tiers. */
 const SERVICE_TIER_APIS = new Set(["openai-codex-responses", "openai-responses"]);
 
-/** Whether an API accepts the OpenAI `service_tier` request field. */
-export function isServiceTierApi(api: string | undefined): boolean {
-  return api !== undefined && SERVICE_TIER_APIS.has(api);
+/** Copilot uses Responses but rejects OpenAI's `service_tier` request field. */
+export function supportsServiceTier(model: Pick<Model<Api>, "api" | "provider"> | undefined): boolean {
+  return model !== undefined && model.provider !== "github-copilot" && SERVICE_TIER_APIS.has(model.api);
 }
 
 function isObjectPayload(payload: unknown): payload is Record<string, unknown> {
@@ -80,7 +81,7 @@ export function installServiceTierPayload(
       : undefined;
     const effectivePayload = replacement === undefined ? payload : replacement;
 
-    if (!isServiceTierApi(requestModel.api) || !isObjectPayload(effectivePayload)) {
+    if (!supportsServiceTier(requestModel) || !isObjectPayload(effectivePayload)) {
       return effectivePayload;
     }
     return { ...effectivePayload, service_tier: serviceTier };
@@ -436,6 +437,8 @@ export interface ToolActivity {
 }
 
 export interface RunOptions {
+  /** Additional instructions from an applied Jev model profile. */
+  routingInstruction?: string;
   /** Snapshot of the selected definition for this branch. */
   agentConfig?: AgentConfig;
   /** ExtensionAPI instance — used for pi.exec() instead of execSync. */
@@ -509,8 +512,8 @@ export interface RunOptions {
    *
    * `cost` is pi's own `usage.cost.total` for that message — priced from the
    * model's rates, so it is 0 (not missing) for a model pi has no pricing for.
-   * We never price anything ourselves; every dollar figure this extension shows
-   * or reports traces back to this field.
+   * Codex Fast responses receive the missing tier multiplier before this event;
+   * every dollar figure this extension reports traces back to this field.
    */
   onAssistantUsage?: (usage: LifetimeUsage) => void;
   /**
@@ -725,6 +728,8 @@ export async function runAgent(
     systemPrompt = buildAgentPrompt({ ...fallback, name: type }, effectiveCwd, env, parentSystemPrompt, extras);
   }
 
+  if (options.routingInstruction) systemPrompt += `\n\n<jev_model_instruction>\n${options.routingInstruction}\n</jev_model_instruction>`;
+
   // When skills is string[], we've already preloaded them into the prompt.
   // Still pass noSkills: true since we don't need the skill loader to load them again.
   const noSkills = skills === false || Array.isArray(skills);
@@ -781,7 +786,7 @@ export async function runAgent(
           return {
             ...base,
             extensions: base.extensions.filter((e) => {
-              if (e.path === "<inline:subagent-tool-scope>") return true;
+              if (e.path === "<inline:subagent-tool-scope>" || e.path === "<inline:subagent-service-tier-cost>") return true;
               const canons = extensionCanonicalNames(e.path);
               if (canons.some((n) => excludeNames.has(n))) return false; // exclude wins
               return loadAll || canons.some((n) => keepNames.has(n));
@@ -796,17 +801,17 @@ export async function runAgent(
     additionalExtensionPaths,
     // Pi's nested ctx.executeTool calls dispatch tool_call directly, and prompt
     // setup can replace agent.beforeToolCall. Enforce scope in that dispatch too.
-    extensionFactories: noExtensions ? [] : [{
+    extensionFactories: [...(noExtensions ? [] : [{
       name: "subagent-tool-scope",
       hidden: true,
-      factory: (pi) => {
+      factory: (pi: ExtensionAPI) => {
         pi.on("tool_call", (event) => {
           if (toolInScope && !toolInScope(event.toolName)) {
             return { block: true, reason: `Tool "${event.toolName}" is not available to this subagent.` };
           }
         });
       },
-    }],
+    }]), { name: "subagent-service-tier-cost", hidden: true, factory: serviceTierCostExtension }],
     extensionsOverride,
     noSkills,
     noPromptTemplates: true,
