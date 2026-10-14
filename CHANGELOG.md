@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.2] - 2026-10-14
+
 ### Fixed
 - **Codex Fast costs include the processing-tier multiplier.** Responses marked `fast`, including replies cut short by token limits, now use the model's catalog rates with the Fast multiplier before subagent usage callbacks and session persistence. Standard fallbacks and estimates already adjusted by Pi or another extension retain their reported costs.
 
